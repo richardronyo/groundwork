@@ -2,17 +2,18 @@
 Groundwork — ChromaDB Vector Store Builder
 
 For each file:
-  1. Embeds each business rule using OpenAI embeddings
-  2. Averages the rule vectors to produce a single file vector
-  3. Stores the file vector + metadata in a local ChromaDB collection
+  1. Computes BERTScore F1 for every (rule, key_point) pair → (n_rules, n_keypoints) matrix
+  2. Averages across rules → (1, n_keypoints) vector
+  3. Each dimension in the vector represents one key point
+  4. Stores the vector + metadata in ChromaDB
 
 Usage:
-    python3 build_vectorstore.py
-    python3 build_vectorstore.py --rules business_rules.json --keypoints repo_function.json
-    python3 build_vectorstore.py --collection groundwork --db ./chroma_db
+    python3 embeddings.py
+    python3 embeddings.py --rules business_rules.json --keypoints repo_function.json
+    python3 embeddings.py --collection groundwork --db ./chroma_db
 
 Requirements:
-    pip install openai chromadb python-dotenv
+    pip install chromadb python-dotenv bert-score torch transformers
 """
 
 import json
@@ -22,339 +23,207 @@ import time
 import argparse
 from pathlib import Path
 
-from openai import OpenAI
 import chromadb
 from dotenv import load_dotenv
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-EMBEDDING_MODEL = "text-embedding-3-small"
-
 CHROMA_COLLECTION = "groundwork"
-CHROMA_DB_PATH = "./chroma_db"
-
-RETRY_DELAY = 1
-
-# ── OpenAI Embedding Client ───────────────────────────────────────────────────
+CHROMA_DB_PATH    = "./chroma_db"
+BERT_MODEL        = "distilbert-base-uncased"
 
 
-def get_client() -> OpenAI:
-    if not OPENAI_API_KEY:
-        print("Error: OPENAI_API_KEY not set in .env")
+# ── BERTScore ─────────────────────────────────────────────────────────────────
+
+def load_bert_scorer():
+    try:
+        from bert_score import score as bert_score_fn
+        return bert_score_fn
+    except ImportError:
+        print("Error: bert-score not installed. Run: pip install bert-score")
         sys.exit(1)
 
-    return OpenAI(api_key=OPENAI_API_KEY)
 
-
-def embed_texts(
-    client: OpenAI,
-    texts: list[str],
-    retries: int = 3,
-) -> list[list[float]]:
+def compute_file_vector(
+    rules: list[str],
+    key_points: list[str],
+    bert_score_fn,
+) -> list[float]:
     """
-    Embed a list of texts using OpenAI embeddings.
+    Builds a (n_keypoints,) vector for a file.
+
+    For each key point k:
+      - Score every rule against k  →  [f1_rule1, f1_rule2, ...]
+      - Average those scores        →  one float for dimension k
+
+    Result: a vector where dimension k = how much this file's rules
+            collectively relate to key point k.
     """
+    n_kp = len(key_points)
+    file_vector = []
 
-    for attempt in range(retries):
-        try:
-            response = client.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=texts,
-            )
+    for kp in key_points:
+        # Score all rules against this one key point
+        # cands = rules, refs = same key point repeated for each rule
+        refs = [kp] * len(rules)
+        _, _, F1 = bert_score_fn(
+            cands=rules,
+            refs=refs,
+            model_type=BERT_MODEL,
+            verbose=False,
+        )
+        # Average F1 across all rules for this key point
+        avg_f1 = float(F1.mean())
+        file_vector.append(round(avg_f1, 6))
 
-            return [
-                item.embedding
-                for item in response.data
-            ]
-
-        except Exception as e:
-            if attempt < retries - 1:
-                print(
-                    f"\n  Embedding API error: {e}"
-                    f" — retrying in {RETRY_DELAY}s..."
-                )
-                time.sleep(RETRY_DELAY)
-            else:
-                raise
-
-
-# ── Vector Math ───────────────────────────────────────────────────────────────
-
-
-def average_vectors(vectors: list[list[float]]) -> list[float]:
-    """
-    Element-wise average of vectors.
-    """
-
-    if not vectors:
-        return []
-
-    dim = len(vectors[0])
-    result = [0.0] * dim
-
-    for vec in vectors:
-        for i, val in enumerate(vec):
-            result[i] += val
-
-    count = len(vectors)
-
-    return [
-        value / count
-        for value in result
-    ]
+    return file_vector
 
 
 # ── ChromaDB Setup ────────────────────────────────────────────────────────────
 
-
-def get_collection(
-    db_path: str,
-    collection_name: str,
-) -> chromadb.Collection:
-
+def get_collection(db_path: str, collection_name: str) -> chromadb.Collection:
     client = chromadb.PersistentClient(path=db_path)
-
     collection = client.get_or_create_collection(
         name=collection_name,
         metadata={"hnsw:space": "cosine"},
     )
-
     return collection
 
 
 # ── Main Pipeline ─────────────────────────────────────────────────────────────
 
-
 def build_vectorstore(
     business_rules: dict[str, list[str]],
     key_points: list[str],
-    client: OpenAI,
     collection: chromadb.Collection,
+    bert_score_fn,
 ):
-    total = len(business_rules)
+    total  = len(business_rules)
+    n_kp   = len(key_points)
 
-    print(f"\n  Building vectors for {total} files...\n")
+    print(f"\n  Files to process : {total}")
+    print(f"  Key points       : {n_kp}")
+    print(f"  Vector dimensions: {n_kp}  (one per key point)\n")
 
     upserted = 0
-    skipped = 0
+    skipped  = 0
 
-    for i, (relative, rules) in enumerate(
-        business_rules.items()
-    ):
+    for i, (relative, rules) in enumerate(business_rules.items()):
         pct = int((i + 1) / total * 40)
         bar = "█" * pct + "░" * (40 - pct)
-
         name = relative.split("/")[-1]
-
-        print(
-            f"\r  [{bar}] {i+1}/{total}  {name:<40}",
-            end="",
-            flush=True,
-        )
+        print(f"\r  [{bar}] {i+1}/{total}  {name:<40}", end="", flush=True)
 
         if not rules:
             skipped += 1
             continue
 
-        # Embed all business rules for this file
-        rule_vectors = embed_texts(
-            client,
-            rules,
-        )
+        # Build the (n_keypoints,) vector for this file
+        file_vector = compute_file_vector(rules, key_points, bert_score_fn)
 
-        # Average rule vectors → single file vector
-        file_vector = average_vectors(
-            rule_vectors
-        )
-
-        if not file_vector:
-            skipped += 1
-            continue
+        # Find which key point this file is most aligned with
+        top_index = int(max(range(n_kp), key=lambda k: file_vector[k]))
+        top_score = file_vector[top_index]
+        top_kp    = key_points[top_index]
 
         metadata = {
-            "relative": relative,
-            "name": name,
-            "rule_count": len(rules),
+            "relative":    relative,
+            "name":        name,
+            "rule_count":  len(rules),
+            "top_kp":      top_kp,
+            "top_kp_index":top_index,
+            "top_score":   round(top_score, 4),
+            # Store all scores as JSON string for notebook inspection
+            "kp_scores":   json.dumps(
+                {f"kp_{k}": file_vector[k] for k in range(n_kp)}
+            ),
         }
 
         collection.upsert(
             ids=[relative],
             embeddings=[file_vector],
             metadatas=[metadata],
-            documents=[
-                "\n\n".join(rules)
-            ],
+            documents=["\n\n".join(rules)],
         )
-
         upserted += 1
 
-    print(
-        f"\n\n  ✓ {upserted} files added to ChromaDB, "
-        f"{skipped} skipped (no rules)."
-    )
+    print(f"\n\n  ✓ {upserted} files added to ChromaDB, {skipped} skipped (no rules).")
 
+
+# ── Summary ───────────────────────────────────────────────────────────────────
 
 def print_summary(
     collection: chromadb.Collection,
     key_points: list[str],
 ):
-    count = collection.count()
+    count   = collection.count()
+    results = collection.get(include=["metadatas"])
 
-    print(
-        "\n  ┌─ ChromaDB Summary "
-        "───────────────────────────────┐"
-    )
-    print(
-        f"  │  Collection     : "
-        f"{collection.name:<32}│"
-    )
-    print(
-        f"  │  File vectors   : "
-        f"{count:<32}│"
-    )
-    print(
-        f"  │  Key points     : "
-        f"{len(key_points):<32}│"
-    )
-    print(
-        "  └──────────────────────────────────────────────────┘"
-    )
+    print(f"\n  ┌─ ChromaDB Summary ───────────────────────────────┐")
+    print(f"  │  Collection      : {collection.name:<31}│")
+    print(f"  │  File vectors    : {count:<31}│")
+    print(f"  │  Vector dimensions: {len(key_points):<30}│")
+    print(f"  └──────────────────────────────────────────────────┘")
 
-    print("\n  Example query (Python):")
+    # For each key point, show the top 3 most aligned files
+    print("\n  Top files per key point:\n")
+    for k, kp in enumerate(key_points):
+        # Sort files by their score for this key point
+        scored = []
+        for meta in results["metadatas"]:
+            scores = json.loads(meta.get("kp_scores", "{}"))
+            score  = scores.get(f"kp_{k}", 0.0)
+            scored.append((score, meta["name"]))
+        scored.sort(reverse=True)
 
-    print(
-        """
-    import chromadb
-
-    client = chromadb.PersistentClient(
-        path="./chroma_db"
-    )
-
-    col = client.get_collection(
-        "groundwork"
-    )
-
-    results = col.query(
-        query_texts=[
-            "authentication and user login"
-        ],
-        n_results=5
-    )
-
-    for r in results["metadatas"][0]:
-        print(r["relative"])
-    """
-    )
+        kp_short = kp[:70] + "..." if len(kp) > 70 else kp
+        print(f"  KP {k+1:02d}: {kp_short}")
+        for score, name in scored[:3]:
+            print(f"         [{score:.4f}]  {name}")
+        print()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
-
 def main():
     parser = argparse.ArgumentParser(
-        description=(
-            "Groundwork — build ChromaDB vector "
-            "store from business rules"
-        )
+        description="Groundwork — build key-point-aligned ChromaDB vectors using BERTScore"
     )
-
-    parser.add_argument(
-        "--rules",
-        default="business_rules.json",
-        help=(
-            "Path to business_rules.json "
-            "(default: business_rules.json)"
-        ),
-    )
-
-    parser.add_argument(
-        "--keypoints",
-        default="repo_function.json",
-        help=(
-            "Path to repo_function.json "
-            "(default: repo_function.json)"
-        ),
-    )
-
-    parser.add_argument(
-        "--collection",
-        default=CHROMA_COLLECTION,
-        help=(
-            f"ChromaDB collection name "
-            f"(default: {CHROMA_COLLECTION})"
-        ),
-    )
-
-    parser.add_argument(
-        "--db",
-        default=CHROMA_DB_PATH,
-        help=(
-            f"ChromaDB persistence path "
-            f"(default: {CHROMA_DB_PATH})"
-        ),
-    )
-
+    parser.add_argument("--rules",      default="business_rules.json")
+    parser.add_argument("--keypoints",  default="repo_function.json")
+    parser.add_argument("--collection", default=CHROMA_COLLECTION)
+    parser.add_argument("--db",         default=CHROMA_DB_PATH)
     args = parser.parse_args()
 
     rules_path = Path(args.rules)
-    kp_path = Path(args.keypoints)
+    kp_path    = Path(args.keypoints)
 
     if not rules_path.exists():
-        print(
-            f"Error: '{rules_path}' not found. "
-            "Run extract_rules.py first."
-        )
+        print(f"Error: '{rules_path}' not found. Run extract_rules.py first.")
         sys.exit(1)
-
     if not kp_path.exists():
-        print(
-            f"Error: '{kp_path}' not found. "
-            "Run extract_rules.py first."
-        )
+        print(f"Error: '{kp_path}' not found. Run extract_rules.py first.")
         sys.exit(1)
 
     with open(rules_path) as f:
         business_rules = json.load(f)
-
     with open(kp_path) as f:
         key_points = json.load(f)
 
-    print(
-        f"\n  Loaded {len(business_rules)} "
-        f"files from {rules_path}"
-    )
-
-    print(
-        f"  Loaded {len(key_points)} "
-        f"key points from {kp_path}"
-    )
-
+    print(f"\n  Loaded {len(business_rules)} files from {rules_path}")
+    print(f"  Loaded {len(key_points)} key points from {kp_path}")
     print(f"  ChromaDB path      : {args.db}")
     print(f"  ChromaDB collection: {args.collection}")
-    print(f"  Embedding model    : {EMBEDDING_MODEL}")
+    print(f"  BERTScore model    : {BERT_MODEL}")
+    print(f"  Vector dimensions  : {len(key_points)} (one per key point)")
 
-    client = get_client()
+    bert_score_fn = load_bert_scorer()
+    print(f"  ✓ BERTScore model loaded.\n")
 
-    collection = get_collection(
-        args.db,
-        args.collection,
-    )
+    collection = get_collection(args.db, args.collection)
 
-    build_vectorstore(
-        business_rules,
-        key_points,
-        client,
-        collection,
-    )
-
-    print_summary(
-        collection,
-        key_points,
-    )
+    build_vectorstore(business_rules, key_points, collection, bert_score_fn)
+    print_summary(collection, key_points)
 
 
 if __name__ == "__main__":
