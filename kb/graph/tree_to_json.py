@@ -4,7 +4,7 @@ Groundwork — Tree to JSON
 Parses `tree` CLI output (or any tree-style text) into a flat JSON file list.
 
 Usage:
-    tree /path/to/repo | python3 tree_to_json.py > files.json
+    tree -f /path/to/repo | python3 tree_to_json.py > files.json
     python3 tree_to_json.py < nopCommerce_tree.txt > files.json
     python3 tree_to_json.py nopCommerce_tree.txt > files.json
 """

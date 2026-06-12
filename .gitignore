@@ -1,6 +1,6 @@
 venv/*
 Neo4J-Credentials.txt
-repo-*
+flask/*
 repo-tree*
 nopCommerce/*
 kb/graph/nopCommerce_tree.json
