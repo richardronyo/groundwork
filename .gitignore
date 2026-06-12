@@ -1,4 +1,7 @@
 venv/*
-kb/Neo4J-Credentials.txt
+Neo4J-Credentials.txt
+repo-*
+repo-tree*
 nopCommerce/*
-nopCommerce_tree.json
+kb/graph/nopCommerce_tree.json
+.env
