@@ -1,0 +1,3 @@
+venv/*
+kb/Neo4J-Credentials.txt
+nopCommerce-develop/**
