@@ -5,3 +5,4 @@ repo-tree*
 nopCommerce/*
 kb/graph/nopCommerce_tree.json
 .env
+chroma_db/*

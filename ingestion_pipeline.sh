@@ -5,8 +5,10 @@
 # 2. Runs tree | tree_to_json.py  → repo-tree-<name>.json
 # 3. Runs ingest_graph.py         → populates File/Directory nodes
 # 4. Runs build_dependencies.py   → populates DEPENDS_ON edges
+# 5. Runs extract_rules.py        → business_rules.json + repo_function.json
 #
-# Usage: ./ingestion_pipeline.sh
+# Usage: ./ingest.sh
+#    or: ./ingest.sh /path/to/repo
 # =============================================================================
 
 set -euo pipefail
@@ -16,6 +18,7 @@ set -euo pipefail
 TREE_TO_JSON="kb/graph/tree_to_json.py"
 INGEST_GRAPH="kb/graph/json_to_graph.py"
 BUILD_DEPS="kb/graph/file_dependencies.py"
+EXTRACT_RULES="kb/vector/extract_business_rules.py"
 
 # ── Check dependencies ────────────────────────────────────────────────────────
 
@@ -32,7 +35,7 @@ check_deps() {
     missing=1
   fi
 
-  for script in "$TREE_TO_JSON" "$INGEST_GRAPH" "$BUILD_DEPS"; do
+  for script in "$TREE_TO_JSON" "$INGEST_GRAPH" "$BUILD_DEPS" "$EXTRACT_RULES"; do
     if [[ ! -f "$script" ]]; then
       echo "  ✗ Missing script: $script"
       missing=1
@@ -63,22 +66,6 @@ print_step() {
   printf '%0.s─' {1..60}; echo
   echo "  Step $step — $label"
   printf '%0.s─' {1..60}; echo
-  echo ""
-}
-
-print_done() {
-  echo ""
-  printf '%0.s═' {1..60}; echo
-  echo "  ✓ Pipeline complete"
-  echo ""
-  echo "  JSON tree  : $OUTPUT_JSON"
-  echo "  Neo4j      : https://console.neo4j.io"
-  echo ""
-  echo "  Useful Cypher queries:"
-  echo "    MATCH (n) RETURN n"
-  echo "    MATCH (a:File)-[:DEPENDS_ON]->(b:File) RETURN a.name, b.name"
-  echo "    MATCH (a:File)-[:DEPENDS_ON]->(b:File) RETURN a, b"
-  printf '%0.s═' {1..60}; echo
   echo ""
 }
 
@@ -141,6 +128,30 @@ print_step 3 "Building dependency edges"
 
 python3 "$BUILD_DEPS" "$OUTPUT_JSON" --repo "$REPO_PATH"
 
+# ── Step 4: Extract business rules ───────────────────────────────────────────
+
+print_step 4 "Extracting business rules and repository function"
+
+python3 "$EXTRACT_RULES" "$OUTPUT_JSON" --repo "$REPO_PATH"
+
 # ── Done ──────────────────────────────────────────────────────────────────────
+
+print_done() {
+  echo ""
+  printf '%0.s═' {1..60}; echo
+  echo "  ✓ Pipeline complete"
+  echo ""
+  echo "  JSON tree      : $OUTPUT_JSON"
+  echo "  Business rules : business_rules.json"
+  echo "  Repo function  : repo_function.json"
+  echo "  Neo4j          : https://console.neo4j.io"
+  echo ""
+  echo "  Useful Cypher queries:"
+  echo "    MATCH (n) RETURN n"
+  echo "    MATCH (a:File)-[:DEPENDS_ON]->(b:File) RETURN a.name, b.name"
+  echo "    MATCH (a:File)-[:DEPENDS_ON]->(b:File) RETURN a, b"
+  printf '%0.s═' {1..60}; echo
+  echo ""
+}
 
 print_done

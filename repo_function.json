@@ -1,0 +1,15 @@
+[
+  "Provides a Python web microframework that routes HTTP requests to view functions, normalizes diverse return types into Response objects, serves static files safely, and renders templates with Jinja.",
+  "Supports modular app structure with Blueprints: namespaced routes, URL prefixes, static/template assets, per-blueprint before/after/teardown hooks, URL defaults/value preprocessors, and blueprint-specific error handlers.",
+  "Manages application and request contexts with context-local proxies (current_app, request, session, g), deterministic push/pop and teardown callbacks, and lifecycle signals for requests and template rendering.",
+  "Offers flexible configuration management: dict-like config loaded from files, modules, environment variables (with prefixes and nested keys), instance folders, and attribute accessors with optional type conversion.",
+  "Provides a powerful CLI that discovers apps or factories automatically, loads .env, honors debug flags, exposes app and blueprint command groups, and runs commands within an application context.",
+  "Implements robust error handling and HTTP method behavior: register handlers by exception or status, wrap unexpected errors as 500, support abort(), and auto-generate OPTIONS/HEAD with 405/404 handling.",
+  "Delivers JSON utilities with a pluggable provider for dumps/loads/jsonify, HTML-safe serialization, file I/O, and a tagged serializer to round-trip nonstandard Python types (used for sessions and custom data).",
+  "Supplies secure, signed cookie-based sessions with configurable lifetimes and attributes, lazy write semantics, invalid/expired cookie handling, and JSON-tagged serialization for complex data.",
+  "Enforces request safety and limits: per-request and global content length, form memory/part limits, JSON parsing conditioned on content type with silent/force options, trusted host validation, and safe file-serving with conditional requests and cache controls.",
+  "Integrates logging tailored to Flask apps: app-named loggers, default streaming to WSGI errors or stderr, debug-aware log levels, and helpers to avoid duplicate handlers or unintended propagation.",
+  "Supports synchronous and asynchronous endpoints, class-based views (View/MethodView), method-specific decorators, automatic HEAD/OPTIONS inclusion, and typed contracts for lifecycle hooks and return values.",
+  "Provides comprehensive testing utilities: a test client with JSON support and redirect following, environment builders that use app config to construct correct URLs, session transactions, and reliable app/request context managers.",
+  "Includes examples and documentation: a tutorial blog with auth and SQLite/CLI, JavaScript/AJAX endpoints, a Celery integration demonstrating background tasks and progress APIs, and Sphinx-based docs with cross-references and project links."
+]
