@@ -74,27 +74,27 @@ Parsed File JSON:
 {file_json}
 """
 
+
 SYNTHESIS_PROMPT = """\
-You are a senior software architect. Below are business rules extracted from \
-every file in a software repository.
+Your task is to produce a repository capability catalog.
 
-Your task: synthesize these into a concise list of KEY POINTS that describe \
-the overall function and purpose of this repository as a whole system.
+For every meaningful behavior that appears repeatedly across the codebase:
 
-Guidelines:
-- Identify the core domain and what problem this software solves
-- Group related rules into higher-level themes
-- Aim for 8-15 key points — enough to be comprehensive, few enough to be useful
-- Each point should describe a meaningful capability or constraint of the system
-- Write from the perspective of what the system DOES, not how it works internally
-- Avoid duplicates and overly technical implementation details
+- create one capability statement
+- keep it specific
+- avoid architectural marketing language
+- preserve constraints and conditions
 
-Respond ONLY with a JSON array of strings. No preamble, no markdown, no explanation.
+Output 30-100 capabilities if needed.
 
-Business rules by file:
+Respond ONLY with a JSON array of strings.
+No markdown.
+No explanations.
+No headings.
+
+Business Rules:
 {rules_block}
 """
-
 # ── OpenAI Client ─────────────────────────────────────────────────────────────
 
 def get_client() -> OpenAI:
