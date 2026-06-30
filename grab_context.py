@@ -1,42 +1,50 @@
 #!/usr/bin/env python3
 """
-Groundwork — Multi-Database Context Retrieval
+Groundwork — Multi-Database Context Retrieval (LangChain)
 
-Given a user prompt, this script:
-1. Uses BERTScore to compare the prompt against all key points
-2. Finds the most relevant key point
-3. Gets the top 2 files that match this key point from ChromaDB (using metadata filter)
-4. Retrieves all DEPENDS_ON dependencies from Neo4j
-5. Fetches business rules from PostgreSQL
+Wraps the three knowledge-base stores as a single LangChain retriever:
+  1. BERTScore matches the query against key points (from PostgreSQL)
+  2. ChromaDB supplies the top files for the best key point
+  3. Neo4j supplies DEPENDS_ON dependencies + directory location
+  4. PostgreSQL supplies business rules
+
+The result is exposed as a LangChain BaseRetriever returning Documents,
+so it drops straight into RetrievalQA chains, agents, or any LCEL pipeline.
 
 Usage:
-    python3 grab_context.py "How does user authentication work?"
-    python3 grab_context.py --prompt "payment processing" --top 3
+    python3 grab_context_langchain.py "How does user authentication work?"
+    python3 grab_context_langchain.py "payment processing" --top 3
+    python3 grab_context_langchain.py "session handling" --ask   # full RAG answer
+
+Requirements:
+    pip install langchain langchain-core langchain-openai \
+                chromadb psycopg neo4j bert-score python-dotenv
 """
 
 import os
 import sys
-import json
 import argparse
 from pathlib import Path
-from typing import List, Dict, Set, Tuple
-from collections import defaultdict
+from typing import List, Dict, Tuple, Optional
 
 import chromadb
 import psycopg
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
-import torch
+
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from pydantic import Field
 
 load_dotenv()
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 
-CHROMA_DB_PATH = "./chroma_db"
+CHROMA_DB_PATH    = "./chroma_db"
 CHROMA_COLLECTION = "groundwork"
-BERT_MODEL = "distilbert-base-uncased"
+BERT_MODEL        = "distilbert-base-uncased"
 
-# PostgreSQL config
 DB_CONFIG = {
     "host": "localhost",
     "dbname": "repo_analysis",
@@ -44,16 +52,14 @@ DB_CONFIG = {
     "password": os.getenv("POSTGRES_PASSWORD"),
 }
 
-# Neo4j config
-NEO4J_URI = os.getenv("NEO4J_URI")
+NEO4J_URI      = os.getenv("NEO4J_URI")
 NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 
-# ── BERTScore ─────────────────────────────────────────────────────────────────
+# ── Helpers that read each store (reused by the retriever) ────────────────────
 
 def load_bert_scorer():
-    """Load BERTScore function."""
     try:
         from bert_score import score as bert_score_fn
         return bert_score_fn
@@ -62,123 +68,50 @@ def load_bert_scorer():
         sys.exit(1)
 
 
-def score_prompt_against_keypoints(
-    prompt: str,
-    key_points: List[str],
-    bert_score_fn
-) -> List[float]:
-    """
-    Score a prompt against all key points using BERTScore.
-    Returns a list of F1 scores for each key point.
-    """
-    # Repeat the prompt for each key point
-    cands = [prompt] * len(key_points)
-    refs = key_points
-    
-    P, R, F1 = bert_score_fn(
-        cands=cands,
-        refs=refs,
-        model_type=BERT_MODEL,
-        verbose=False,
-    )
-    
-    # Convert tensors to list of floats
-    scores = [float(score.item()) for score in F1]  # Use .item() for PyTorch tensors
-    return scores
-
-
-def load_key_points(key_points_file: str = "repo_function.json") -> List[str]:
-    """Load key points from JSON file."""
-    with open(key_points_file, "r") as f:
-        return json.load(f)
-
-
-# ── ChromaDB Queries ──────────────────────────────────────────────────────────
-
-def get_chroma_collection():
-    """Get ChromaDB collection."""
-    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+def load_key_points_from_db(repo_name: str = None) -> List[str]:
+    """Key points now live in PostgreSQL, not repo_function.json."""
+    conn = psycopg.connect(**DB_CONFIG)
     try:
-        return client.get_collection(CHROMA_COLLECTION)
-    except ValueError:
-        print(f"Error: Collection '{CHROMA_COLLECTION}' not found.")
-        print("Run: python3 kb/vector/embeddings.py --reset")
-        sys.exit(1)
+        with conn.cursor() as cur:
+            if repo_name is None:
+                cur.execute("SELECT DISTINCT repository_name FROM key_points LIMIT 1")
+                row = cur.fetchone()
+                if not row:
+                    return []
+                repo_name = row[0]
+            cur.execute(
+                "SELECT point_text FROM key_points WHERE repository_name = %s ORDER BY point_index",
+                (repo_name,),
+            )
+            return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
 
 
-def get_files_for_keypoint(
-    collection, 
-    key_point: str, 
-    top_n: int = 2
-) -> Tuple[List[str], List[Dict]]:
-    """
-    Get the top N files for a specific key point from ChromaDB.
-    Uses metadata filtering to find files with matching top_kp.
-    """
-    print(f"\n  📂 Getting top {top_n} files for key point: '{key_point[:80]}...'")
-    
-    # Get all files from the collection
-    results = collection.get(
-        include=["documents", "metadatas"]
-    )
-    
-    # Filter files that match the key point
-    matching_files = []
+def score_prompt_against_keypoints(prompt, key_points, bert_score_fn) -> List[float]:
+    cands = [prompt] * len(key_points)
+    _, _, F1 = bert_score_fn(cands=cands, refs=key_points,
+                             model_type=BERT_MODEL, verbose=False)
+    return [float(s.item()) for s in F1]
+
+
+def get_files_for_keypoint(key_point: str, top_n: int) -> List[Dict]:
+    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    collection = client.get_collection(CHROMA_COLLECTION)
+    results = collection.get(include=["documents", "metadatas"])
+
+    matching = []
     for doc, meta in zip(results["documents"], results["metadatas"]):
         if meta.get("top_kp") == key_point:
-            matching_files.append({
-                "doc": doc,
-                "meta": meta
-            })
-    
-    if not matching_files:
-        print(f"  No files found for this key point.")
-        return [], []
-    
-    # Sort by top_score (higher is better)
-    matching_files.sort(key=lambda x: x["meta"].get("top_score", 0), reverse=True)
-    
-    # Take top N
-    top_files = matching_files[:top_n]
-    
-    files = []
-    metadata_list = []
-    
-    for i, item in enumerate(top_files, 1):
-        meta = item["meta"]
-        doc = item["doc"]
-        
-        files.append(meta["relative"])
-        metadata_list.append({
-            "relative": meta["relative"],
-            "name": meta["name"],
-            "similarity": meta.get("top_score", 0),
-            "rule_count": meta.get("rule_count", 0),
-            "top_kp": meta.get("top_kp", ""),
-            "top_score": meta.get("top_score", 0),
-            "rules": doc.split("\n\n") if doc else []
-        })
-        
-        print(f"    {i}. {meta['name']} (score: {meta.get('top_score', 0):.4f})")
-        print(f"       Rules: {meta.get('rule_count', 0)}")
-    
-    return files, metadata_list
+            matching.append({"doc": doc, "meta": meta})
+    matching.sort(key=lambda x: x["meta"].get("top_score", 0), reverse=True)
+    return matching[:top_n]
 
-
-# ── Neo4j Queries ─────────────────────────────────────────────────────────────
 
 def get_dependencies(file_paths: List[str]) -> Dict[str, List[str]]:
-    """
-    Get all DEPENDS_ON dependencies for the given files.
-    Returns: {file_path: [dependency1, dependency2, ...]}
-    """
     if not file_paths:
         return {}
-    
-    print(f"\n  🔗 Querying Neo4j for dependencies...")
-    
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
-    
     try:
         with driver.session() as session:
             result = session.run("""
@@ -186,381 +119,397 @@ def get_dependencies(file_paths: List[str]) -> Dict[str, List[str]]:
                 WHERE f.relative IN $file_paths
                 RETURN f.relative AS source, COLLECT(dep.relative) AS dependencies
             """, file_paths=file_paths)
-            
-            dependencies = {}
-            for record in result:
-                source = record["source"]
-                deps = record["dependencies"]
-                dependencies[source] = deps
-                print(f"    {Path(source).name} depends on {len(deps)} files")
-                for dep in deps[:3]:
-                    print(f"      → {Path(dep).name}")
-                if len(deps) > 3:
-                    print(f"      ... and {len(deps) - 3} more")
-            
-            return dependencies
-    
+            return {r["source"]: r["dependencies"] for r in result}
     finally:
         driver.close()
 
-
-def get_file_locations(file_paths: List[str]) -> Dict[str, Dict]:
-    """
-    Get directory locations for files.
-    """
-    if not file_paths:
-        return {}
-    
-    print(f"\n  📁 Getting file locations...")
-    
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
-    
-    try:
-        with driver.session() as session:
-            result = session.run("""
-                MATCH (d:Directory)-[:CONTAINS]->(f:File)
-                WHERE f.relative IN $file_paths
-                RETURN f.relative AS file, d.relative AS directory, d.name AS dir_name
-            """, file_paths=file_paths)
-            
-            locations = {}
-            for record in result:
-                locations[record["file"]] = {
-                    "directory": record["directory"],
-                    "dir_name": record["dir_name"]
-                }
-            
-            return locations
-    
-    finally:
-        driver.close()
-
-
-# ── PostgreSQL Queries ────────────────────────────────────────────────────────
 
 def get_business_rules(file_paths: List[str]) -> Dict[str, List[str]]:
-    """
-    Get business rules for the given files from PostgreSQL.
-    Returns: {file_path: [rule1, rule2, ...]}
-    """
     if not file_paths:
         return {}
-    
-    print(f"\n  📊 Querying PostgreSQL for business rules...")
-    
     conn = psycopg.connect(**DB_CONFIG)
-    
     try:
         with conn.cursor() as cur:
-            # Get file IDs and rules
             cur.execute("""
-                SELECT 
-                    f.file_path,
-                    array_agg(br.rule_text ORDER BY br.id) AS rules
+                SELECT f.file_path, array_agg(br.rule_text ORDER BY br.id) AS rules
                 FROM files f
                 JOIN business_rules br ON br.file_id = f.id
                 WHERE f.file_path = ANY(%s)
                 GROUP BY f.file_path
             """, (file_paths,))
-            
-            rules_dict = {}
-            for row in cur.fetchall():
-                file_path, rules = row
-                rules_dict[file_path] = rules if rules else []
-                print(f"    {Path(file_path).name}: {len(rules)} rules")
-            
-            return rules_dict
-    
+            return {row[0]: (row[1] or []) for row in cur.fetchall()}
     finally:
         conn.close()
 
 
-# ── Context Assembly ─────────────────────────────────────────────────────────
-
-def assemble_context(
-    query: str,
-    key_point_scores: List[Tuple[str, float]],
-    chroma_results: List[Dict],
-    dependencies: Dict[str, List[str]],
-    rules: Dict[str, List[str]],
-    locations: Dict[str, Dict]
-) -> Dict:
-    """Assemble all retrieved context into a structured format."""
-    
-    context = {
-        "query": query,
-        "key_point_scores": [
-            {"key_point": kp, "score": score} 
-            for kp, score in key_point_scores
-        ],
-        "best_key_point": key_point_scores[0] if key_point_scores else None,
-        "relevant_files": [],
-        "all_dependencies": set(),
-        "all_rules": [],
-        "summary": {}
-    }
-    
-    # Process each file
-    for file_meta in chroma_results:
-        file_path = file_meta["relative"]
-        file_name = file_meta["name"]
-        
-        file_context = {
-            "path": file_path,
-            "name": file_name,
-            "similarity": file_meta["similarity"],
-            "top_key_point": file_meta["top_kp"],
-            "location": locations.get(file_path, {}),
-            "dependencies": dependencies.get(file_path, []),
-            "business_rules": rules.get(file_path, []),
-        }
-        
-        context["relevant_files"].append(file_context)
-        
-        # Collect all dependencies
-        context["all_dependencies"].update(dependencies.get(file_path, []))
-        
-        # Collect all rules
-        context["all_rules"].extend(rules.get(file_path, []))
-    
-    # Convert sets to lists for serialization
-    context["all_dependencies"] = list(context["all_dependencies"])
-    
-    # Add summary
-    context["summary"] = {
-        "total_files": len(chroma_results),
-        "total_dependencies": len(context["all_dependencies"]),
-        "total_rules": len(context["all_rules"]),
-        "best_key_point": key_point_scores[0][0] if key_point_scores else None,
-        "best_key_point_score": key_point_scores[0][1] if key_point_scores else None,
-    }
-    
-    return context
-
-
-# ── Output Formatting ────────────────────────────────────────────────────────
-
-def print_context(context: Dict):
-    """Pretty print the assembled context."""
-    
-    print("\n" + "=" * 80)
-    print(f"  📝 CONTEXT FOR: {context['query']}")
-    print("=" * 80)
-    
-    # Show top key points
-    print(f"\n  🎯 Top 5 Key Points:")
-    key_point_scores = context.get('key_point_scores', [])
-    for i, item in enumerate(key_point_scores[:5], 1):
-        kp = item.get('key_point', 'Unknown')
-        score = item.get('score', 0.0)
-        # Ensure score is a float
-        try:
-            score_float = float(score)
-        except (ValueError, TypeError):
-            score_float = 0.0
-        print(f"    {i}. {kp[:70]}... (score: {score_float:.4f})")
-    
-    # Summary
-    summary = context.get('summary', {})
-    print(f"\n  📊 Summary:")
-    if summary.get('best_key_point'):
-        print(f"    • Best key point: {summary['best_key_point'][:70]}...")
-        print(f"    • Best score: {summary.get('best_key_point_score', 0):.4f}")
-    print(f"    • Relevant files: {summary.get('total_files', 0)}")
-    print(f"    • Dependencies: {summary.get('total_dependencies', 0)}")
-    print(f"    • Business rules: {summary.get('total_rules', 0)}")
-    
-    # Files and their context
-    relevant_files = context.get('relevant_files', [])
-    for i, file_ctx in enumerate(relevant_files, 1):
-        print(f"\n  ── File {i}: {file_ctx.get('name', 'Unknown')} ──")
-        print(f"    Path: {file_ctx.get('path', 'Unknown')}")
-        print(f"    ChromaDB Score: {file_ctx.get('similarity', 0):.4f}")
-        
-        location = file_ctx.get('location', {})
-        if location:
-            print(f"    Directory: {location.get('dir_name', 'unknown')}")
-        
-        # Business rules
-        rules = file_ctx.get('business_rules', [])
-        if rules:
-            print(f"\n    📋 Business Rules ({len(rules)}):")
-            for j, rule in enumerate(rules[:3], 1):
-                print(f"      {j}. {rule[:150]}...")
-            if len(rules) > 3:
-                print(f"      ... and {len(rules) - 3} more")
-        
-        # Dependencies
-        deps = file_ctx.get('dependencies', [])
-        if deps:
-            print(f"\n    🔗 Dependencies ({len(deps)}):")
-            for dep in deps[:3]:
-                print(f"      → {Path(dep).name}")
-            if len(deps) > 3:
-                print(f"      ... and {len(deps) - 3} more")
-    
-    # All dependencies summary
-    all_deps = context.get('all_dependencies', [])
-    if all_deps:
-        print(f"\n  📦 All dependencies ({len(all_deps)} total):")
-        for dep in all_deps[:5]:
-            print(f"    • {Path(dep).name}")
-        if len(all_deps) > 5:
-            print(f"    ... and {len(all_deps) - 5} more")
-    
-    # All business rules summary
-    all_rules = context.get('all_rules', [])
-    if all_rules:
-        print(f"\n  📋 All business rules ({len(all_rules)} total):")
-        for rule in all_rules[:5]:
-            print(f"    • {rule[:120]}...")
-        if len(all_rules) > 5:
-            print(f"    ... and {len(all_rules) - 5} more")
-    
-    print("\n" + "=" * 80)
-
-
-def save_context(context: Dict, output_file: str = "context_output.json"):
-    """Save context to JSON file."""
-    with open(output_file, "w") as f:
-        json.dump(context, f, indent=2, default=str)
-    print(f"\n  💾 Context saved to: {output_file}")
-
-
-# ── Main Query Function ──────────────────────────────────────────────────────
-
-def query_context(prompt: str, top_n: int = 2, save: bool = False):
-    """Main function to query all databases and assemble context."""
-    
-    print(f"\n  🚀 Starting context retrieval for: '{prompt}'")
-    print("  " + "=" * 80)
-    
-    # Step 1: Load key points
-    print("\n  📖 Loading key points...")
+def get_repo_metrics(repo_name: str = None) -> Dict:
+    """
+    Pulls aggregate structural stats from PostgreSQL to ground the inference:
+    total files, total lines, language breakdown, top-level directories, and
+    overall class/function/method counts.
+    """
+    conn = psycopg.connect(**DB_CONFIG)
     try:
-        key_points = load_key_points()
-        print(f"    Loaded {len(key_points)} key points")
-    except FileNotFoundError:
-        print("  Error: repo_function.json not found. Run synthesize.py first.")
-        return None
-    
-    # Step 2: Score prompt against key points using BERTScore
-    print(f"\n  📊 Scoring prompt against key points using BERTScore...")
-    bert_score_fn = load_bert_scorer()
-    
-    # Score the prompt against all key points
-    scores = score_prompt_against_keypoints(prompt, key_points, bert_score_fn)
-    
-    # Pair key points with their scores and sort
-    key_point_scores = list(zip(key_points, scores))
-    key_point_scores.sort(key=lambda x: x[1], reverse=True)
-    
-    # Display top 5 scores
-    print(f"\n  🎯 Top 5 matching key points:")
-    for i, (kp, score) in enumerate(key_point_scores[:5], 1):
-        print(f"    {i}. {kp[:70]}... (score: {score:.4f})")
-    
-    if not key_point_scores or key_point_scores[0][1] < 0.3:
-        print("\n  ⚠️  No strong matches found. Try a different query.")
-        return None
-    
-    # Step 3: Get ChromaDB collection
-    collection = get_chroma_collection()
-    
-    # Step 4: Get files for the best matching key point
-    best_kp, best_score = key_point_scores[0]
-    print(f"\n  ✅ Best match: '{best_kp[:80]}...' (score: {best_score:.4f})")
-    
-    file_paths, chroma_results = get_files_for_keypoint(
-        collection, 
-        best_kp, 
-        top_n
-    )
-    
-    if not file_paths:
-        print("  No files found for this key point.")
-        return None
-    
-    # Step 5: Get dependencies from Neo4j
-    dependencies = get_dependencies(file_paths)
-    
-    # Step 6: Get locations from Neo4j
-    locations = get_file_locations(file_paths)
-    
-    # Step 7: Get business rules from PostgreSQL
-    rules = get_business_rules(file_paths)
-    
-    # Step 8: Assemble context
-    context = assemble_context(
-        prompt, 
-        key_point_scores[:10],  # Keep top 10 for context
-        chroma_results, 
-        dependencies, 
-        rules, 
-        locations
-    )
-    
-    # Step 9: Display and save
-    print_context(context)
-    
-    if save:
-        save_context(context)
-    
-    return context
+        with conn.cursor() as cur:
+            if repo_name is None:
+                cur.execute("SELECT DISTINCT repository_name FROM files LIMIT 1")
+                row = cur.fetchone()
+                if not row:
+                    return {}
+                repo_name = row[0]
+
+            # Totals
+            cur.execute("""
+                SELECT COUNT(*), COALESCE(SUM(lines),0),
+                       COALESCE(SUM(classes),0), COALESCE(SUM(functions),0),
+                       COALESCE(SUM(methods),0), COALESCE(SUM(async_functions),0)
+                FROM files WHERE repository_name = %s
+            """, (repo_name,))
+            total_files, total_lines, classes, functions, methods, async_fns = cur.fetchone()
+
+            # Language breakdown
+            cur.execute("""
+                SELECT language, COUNT(*) AS n, COALESCE(SUM(lines),0) AS loc
+                FROM files WHERE repository_name = %s
+                GROUP BY language ORDER BY n DESC
+            """, (repo_name,))
+            languages = [
+                {"language": r[0], "files": r[1], "lines": r[2]}
+                for r in cur.fetchall()
+            ]
+
+            # Top-level directories (first path segment) by file count
+            cur.execute("""
+                SELECT split_part(file_path, '/', 1) AS top_dir, COUNT(*) AS n
+                FROM files WHERE repository_name = %s
+                GROUP BY top_dir ORDER BY n DESC LIMIT 12
+            """, (repo_name,))
+            top_dirs = [{"dir": r[0], "files": r[1]} for r in cur.fetchall()]
+
+        return {
+            "repository_name": repo_name,
+            "total_files": total_files,
+            "total_lines": total_lines,
+            "classes": classes,
+            "functions": functions,
+            "methods": methods,
+            "async_functions": async_fns,
+            "languages": languages,
+            "top_directories": top_dirs,
+        }
+    finally:
+        conn.close()
 
 
-# ── CLI ──────────────────────────────────────────────────────────────────────
+def format_metrics_block(metrics: Dict) -> str:
+    """Renders repo metrics as a compact text block for the LLM prompt."""
+    if not metrics:
+        return ""
+
+    lines = [f"Repository structural profile for '{metrics['repository_name']}':"]
+    lines.append(f"- Total files: {metrics['total_files']}")
+    lines.append(f"- Total lines of code: {metrics['total_lines']}")
+    lines.append(f"- Classes: {metrics['classes']}, Functions: {metrics['functions']}, "
+                 f"Methods: {metrics['methods']}, Async functions: {metrics['async_functions']}")
+
+    if metrics["languages"]:
+        lang_str = ", ".join(
+            f"{l['language']} ({l['files']} files, {l['lines']} loc)"
+            for l in metrics["languages"][:8]
+        )
+        lines.append(f"- Languages: {lang_str}")
+
+    if metrics["top_directories"]:
+        dir_str = ", ".join(
+            f"{d['dir']} ({d['files']})" for d in metrics["top_directories"][:10]
+        )
+        lines.append(f"- Top-level directories: {dir_str}")
+
+    return "\n".join(lines)
+
+
+# ── Repo-level question detection ─────────────────────────────────────────────
+
+REPO_LEVEL_PATTERNS = [
+    "what is this", "what does this", "what's this",
+    "what is the codebase", "what does the codebase",
+    "what is the repo", "what does the repo", "what is the repository",
+    "what is the project", "what does the project",
+    "overall", "in general", "high level", "high-level",
+    "purpose of", "simulating", "simulate", "about this",
+    "summarize", "summary of", "describe the", "what kind of",
+    "what type of", "overview",
+]
+
+
+def is_repo_level_question(query: str) -> bool:
+    """
+    Heuristic: does the query ask about the whole codebase rather than a
+    specific feature? Repo-level questions are answered by the key points
+    collectively, not by retrieving individual files.
+    """
+    q = query.lower().strip()
+    return any(pat in q for pat in REPO_LEVEL_PATTERNS)
+
+
+def get_all_key_points_as_document(query: str, repo_name: str = None) -> Document:
+    """
+    Builds a single Document combining two kinds of evidence for repo-level
+    inference:
+      1. The structural profile (file counts, languages, directories) from the
+         files table — concrete grounding.
+      2. The synthesized key points — behavioral grounding.
+    Together these let the LLM infer what the codebase actually is.
+    """
+    metrics = get_repo_metrics(repo_name)
+    key_points = load_key_points_from_db(repo_name)
+
+    metrics_block = format_metrics_block(metrics)
+    kp_block = (
+        "Repository capability catalog (what this codebase does as a whole):\n\n" +
+        "\n".join(f"- {kp}" for kp in key_points)
+    )
+
+    page_content = (metrics_block + "\n\n" + kp_block) if metrics_block else kp_block
+
+    return Document(
+        page_content=page_content,
+        metadata={
+            "retrieval_type": "repo_level",
+            "key_point_count": len(key_points),
+            "matched_key_point": "(all key points + structural profile)",
+            "key_point_score": 1.0,
+            "name": "repository_overview",
+            "relative": "(whole repository)",
+            "score": 1.0,
+            "dependencies": [],
+            "rule_count": 0,
+            "total_files": metrics.get("total_files", 0) if metrics else 0,
+        },
+    )
+
+
+# ── The LangChain Retriever ───────────────────────────────────────────────────
+
+class GroundworkRetriever(BaseRetriever):
+    """
+    A LangChain retriever over the Groundwork knowledge base.
+
+    For a query it returns one Document per relevant file, where:
+      - page_content = the file's business rules (the LLM-facing context)
+      - metadata     = file path, score, dependencies, matched key point
+
+    Because it subclasses BaseRetriever, it works with RetrievalQA,
+    create_retrieval_chain, agents, and any LCEL `retriever | prompt | llm`.
+    """
+
+    top_n: int = Field(default=2)
+    min_score: float = Field(default=0.3)
+    repo_name: Optional[str] = Field(default=None)
+    mode: str = Field(default="auto")  # "auto" | "repo" | "file"
+    _bert_fn: object = None
+
+    def _ensure_bert(self):
+        if self._bert_fn is None:
+            object.__setattr__(self, "_bert_fn", load_bert_scorer())
+        return self._bert_fn
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun = None
+    ) -> List[Document]:
+
+        # ── Route: repo-level vs file-level ────────────────────────────────
+        if self.mode == "repo" or (self.mode == "auto" and is_repo_level_question(query)):
+            return [get_all_key_points_as_document(query, self.repo_name)]
+
+        # ── File-level retrieval (original flow) ───────────────────────────
+        # 1. Key points from Postgres
+        key_points = load_key_points_from_db(self.repo_name)
+        if not key_points:
+            return []
+
+        # 2. BERTScore the query against key points
+        bert_fn = self._ensure_bert()
+        scores = score_prompt_against_keypoints(query, key_points, bert_fn)
+        ranked = sorted(zip(key_points, scores), key=lambda x: x[1], reverse=True)
+
+        best_kp, best_score = ranked[0]
+        if best_score < self.min_score:
+            return []
+
+        # 3. ChromaDB → top files for the best key point
+        file_matches = get_files_for_keypoint(best_kp, self.top_n)
+        if not file_matches:
+            return []
+
+        file_paths = [m["meta"]["relative"] for m in file_matches]
+
+        # 4. Neo4j dependencies + 5. Postgres rules
+        dependencies = get_dependencies(file_paths)
+        rules        = get_business_rules(file_paths)
+
+        # 6. Build one Document per file
+        docs = []
+        for m in file_matches:
+            meta = m["meta"]
+            rel  = meta["relative"]
+            file_rules = rules.get(rel, []) or (m["doc"].split("\n\n") if m["doc"] else [])
+
+            page_content = (
+                f"File: {rel}\n\n"
+                f"Business rules:\n" +
+                "\n".join(f"- {r}" for r in file_rules)
+            )
+
+            docs.append(Document(
+                page_content=page_content,
+                metadata={
+                    "relative": rel,
+                    "name": meta.get("name"),
+                    "score": meta.get("top_score", 0),
+                    "matched_key_point": best_kp,
+                    "key_point_score": best_score,
+                    "dependencies": dependencies.get(rel, []),
+                    "rule_count": len(file_rules),
+                },
+            ))
+        return docs
+
+
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
+def print_documents(docs: List[Document]):
+    if not docs:
+        print("\n  No relevant context found (no key point passed the score threshold).")
+        print("  Tip: for whole-codebase questions try phrasing like "
+              "'what does this codebase do', or pass --mode repo.")
+        return
+
+    # Repo-level result — a single overview document
+    if docs[0].metadata.get("retrieval_type") == "repo_level":
+        m = docs[0].metadata
+        print(f"\n  Retrieval type: REPO-LEVEL (whole codebase)")
+        print(f"  Answered from {m['key_point_count']} key points.\n")
+        print(docs[0].page_content)
+        print()
+        return
+
+    # File-level result
+    print(f"\n  Retrieval type: FILE-LEVEL")
+    print(f"  Retrieved {len(docs)} documents:\n")
+    print(f"  Matched key point: {docs[0].metadata['matched_key_point'][:80]}...")
+    print(f"  Key point score  : {docs[0].metadata['key_point_score']:.4f}\n")
+    for i, doc in enumerate(docs, 1):
+        m = doc.metadata
+        print(f"  ── Document {i}: {m['name']} ──")
+        print(f"     Path        : {m['relative']}")
+        print(f"     File score  : {m['score']:.4f}")
+        print(f"     Rules       : {m['rule_count']}")
+        print(f"     Dependencies: {len(m['dependencies'])}")
+        for dep in m["dependencies"][:3]:
+            print(f"        → {Path(dep).name}")
+        print()
+
+
+# ── Prompts for the answer step ───────────────────────────────────────────────
+
+REPO_LEVEL_SYSTEM = """You are a senior software architect.
+You are given two kinds of evidence about an entire codebase:
+  1. A STRUCTURAL PROFILE — file counts, languages, lines of code, and the
+     top-level directory layout.
+  2. A CAPABILITY CATALOG — business rules and behaviors synthesized from the code.
+
+Your job is to INFER and explain what this software actually is — the kind of
+application or system it implements, its core domain, its likely architecture,
+and what problem it solves.
+
+Reason across BOTH the structure and the capabilities. Use the structural profile
+for concrete grounding (e.g. "predominantly C# across Libraries/Plugins/Presentation
+suggests a large layered .NET application") and the capabilities for behavioral
+grounding (e.g. "rules about carts, orders, and stock indicate e-commerce").
+
+Do not just list things back. Form a coherent, specific conclusion about what is
+being built, as if explaining it to a new engineer, and justify it from the
+evidence. If the evidence points to a particular type of system, name it."""
+
+FILE_LEVEL_SYSTEM = """You are a software analyst. Answer the question using ONLY
+the provided business-rule context. Cite the file names you draw from. If the
+context does not contain the answer, say so plainly."""
+
+
+def run_rag(query: str, docs: List[Document]):
+    """Feed retrieved context to an LLM. Uses a synthesis prompt for repo-level
+    questions (infer what the system IS) and a grounded prompt for file-level."""
+    try:
+        from langchain_openai import ChatOpenAI
+        from langchain_core.prompts import ChatPromptTemplate
+    except ImportError:
+        print("Install langchain-openai for --ask: pip install langchain-openai")
+        return
+
+    is_repo_level = docs and docs[0].metadata.get("retrieval_type") == "repo_level"
+
+    context = "\n\n---\n\n".join(d.page_content for d in docs)
+
+    if is_repo_level:
+        system = REPO_LEVEL_SYSTEM
+        human = ("Here is the capability catalog for the codebase:\n\n{context}\n\n"
+                 "Question: {question}\n\n"
+                 "Based on these capabilities, infer and explain what this codebase is.")
+    else:
+        system = FILE_LEVEL_SYSTEM
+        human = "Context:\n{context}\n\nQuestion: {question}"
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system),
+        ("human", human),
+    ])
+    llm = ChatOpenAI(model="gpt-5-mini", api_key=os.getenv("OPENAI_API_KEY"))
+    chain = prompt | llm
+    resp = chain.invoke({"context": context, "question": query})
+
+    print("\n  ── LLM Inference ──\n" if is_repo_level else "\n  ── LLM Answer ──\n")
+    print(resp.content)
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Retrieve context from all databases using BERTScore matching"
+        description="Groundwork context retrieval via LangChain"
     )
-    parser.add_argument(
-        "prompt",
-        nargs="?",
-        help="Query prompt (e.g., 'How does user authentication work?')"
-    )
-    parser.add_argument(
-        "--top",
-        type=int,
-        default=2,
-        help="Number of top files to retrieve (default: 2)"
-    )
-    parser.add_argument(
-        "--save",
-        action="store_true",
-        help="Save context to context_output.json"
-    )
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Run in interactive mode"
-    )
-    
+    parser.add_argument("prompt", nargs="?", help="Query prompt")
+    parser.add_argument("--top", type=int, default=2, help="Top files to retrieve")
+    parser.add_argument("--min-score", type=float, default=0.3)
+    parser.add_argument("--repo", default=None, help="Repository name (optional)")
+    parser.add_argument("--mode", default="auto", choices=["auto", "repo", "file"],
+                        help="auto-detect (default), force repo-level, or force file-level")
+    parser.add_argument("--ask", action="store_true",
+                        help="Also generate an LLM answer from the retrieved context")
     args = parser.parse_args()
-    
-    if args.interactive:
-        print("\n  Interactive Context Retrieval (using BERTScore)")
-        print("  " + "=" * 80)
-        print("  Enter prompts to query. Type 'quit' to exit.")
-        print("  " + "=" * 80)
-        
-        while True:
-            try:
-                prompt = input("\n  🔍 Prompt: ").strip()
-                if not prompt:
-                    continue
-                if prompt.lower() in ["quit", "exit", "q"]:
-                    break
-                
-                query_context(prompt, args.top, args.save)
-            except KeyboardInterrupt:
-                print("\n  Exiting...")
-                break
-    elif args.prompt:
-        query_context(args.prompt, args.top, args.save)
-    else:
+
+    if not args.prompt:
         parser.print_help()
+        return
+
+    retriever = GroundworkRetriever(
+        top_n=args.top,
+        min_score=args.min_score,
+        repo_name=args.repo,
+        mode=args.mode,
+    )
+
+    # This is the LangChain entry point — same call a chain would make
+    docs = retriever.invoke(args.prompt)
+
+    # Repo-level questions are inference questions — they always want the LLM
+    # to reason about what the codebase is, so run the inference automatically.
+    is_repo_level = docs and docs[0].metadata.get("retrieval_type") == "repo_level"
+
+    if is_repo_level:
+        run_rag(args.prompt, docs)
+    else:
+        print_documents(docs)
+        if args.ask and docs:
+            run_rag(args.prompt, docs)
 
 
 if __name__ == "__main__":
