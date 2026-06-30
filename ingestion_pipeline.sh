@@ -1,157 +1,196 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Groundwork — Full Ingestion Pipeline
-# 1. Asks for repository path
-# 2. Runs tree | tree_to_json.py  → repo-tree-<name>.json
-# 3. Runs ingest_graph.py         → populates File/Directory nodes
-# 4. Runs build_dependencies.py   → populates DEPENDS_ON edges
-# 5. Runs extract_rules.py        → business_rules.json + repo_function.json
+# Groundwork — Unified Ingestion Pipeline (PostgreSQL source of truth)
 #
-# Usage: ./ingest.sh
-#    or: ./ingest.sh /path/to/repo
+# Run from the PROJECT ROOT (the directory containing kb/).
+# Scripts run as modules (python3 -m kb.xxx.yyy) so the kb package imports resolve.
+#
+# STAGES (run all, or resume from any one):
+#   init  scan  deps  rules  synth  embed
+#
+# Usage:
+#   ./ingestion_pipeline.sh /path/to/repo                 # full run
+#   ./ingestion_pipeline.sh /path/to/repo --from rules    # resume from stage 4
+#   ./ingestion_pipeline.sh /path/to/repo --only embed    # run just one stage
+#   ./ingestion_pipeline.sh /path/to/repo --from rules --resume-rules
 # =============================================================================
 
 set -euo pipefail
 
-# ── Resolve script directory so we can find sibling scripts ──────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-TREE_TO_JSON="kb/graph/tree_to_json.py"
-INGEST_GRAPH="kb/graph/json_to_graph.py"
-BUILD_DEPS="kb/graph/file_dependencies.py"
-EXTRACT_RULES="kb/vector/extract_business_rules.py"
+# Module paths (dotted, no .py) — run from project root with python3 -m
+TREE_TO_JSON_MOD="kb.graph.tree_to_json"
+JSON_TO_GRAPH_MOD="kb.graph.json_to_graph"
+FILE_DEPS_MOD="kb.graph.file_dependencies"
+INIT_DB_MOD="kb.relationaldb.initialize_db"
+METADATA_MOD="kb.relationaldb.metadata"
+EXTRACT_RULES_MOD="kb.vector.extract_business_rules"
+SYNTHESIZE_MOD="kb.vector.synthesize"
+EMBEDDINGS_MOD="kb.vector.embeddings"
 
-# ── Check dependencies ────────────────────────────────────────────────────────
+STAGES=(init scan deps rules synth embed)
 
-check_deps() {
-  local missing=0
-
-  if ! command -v tree &>/dev/null; then
-    echo "  ✗ 'tree' not found. Install with: brew install tree"
-    missing=1
-  fi
-
-  if ! command -v python3 &>/dev/null; then
-    echo "  ✗ 'python3' not found."
-    missing=1
-  fi
-
-  for script in "$TREE_TO_JSON" "$INGEST_GRAPH" "$BUILD_DEPS" "$EXTRACT_RULES"; do
-    if [[ ! -f "$script" ]]; then
-      echo "  ✗ Missing script: $script"
-      missing=1
-    fi
-  done
-
-  if (( missing )); then
-    echo ""
-    echo "  Fix the above and re-run."
-    exit 1
-  fi
+stage_index() {
+    local target="$1"
+    for i in "${!STAGES[@]}"; do
+        [[ "${STAGES[$i]}" == "$target" ]] && { echo "$i"; return; }
+    done
+    echo "-1"
 }
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+print_header() { echo ""; echo -e "${BLUE}═══ GROUNDWORK — Ingestion Pipeline ═══${NC}"; echo ""; }
+print_step()   { echo ""; echo -e "${YELLOW}━━━ Stage: $1 ━━━${NC}"; echo ""; }
+print_success(){ echo -e "${GREEN}  ✓ $1${NC}"; }
+print_error()  { echo -e "${RED}  ✗ $1${NC}"; exit 1; }
+print_info()   { echo -e "${BLUE}  ℹ $1${NC}"; }
 
-print_header() {
-  echo ""
-  printf '%0.s═' {1..60}; echo
-  echo "  GROUNDWORK — Ingestion Pipeline"
-  printf '%0.s═' {1..60}; echo
-  echo ""
+check_dependency() { command -v "$1" &>/dev/null || print_error "$1 not found."; }
+check_python_module() {
+    python3 -c "import $1" 2>/dev/null || print_error "Python module '$1' missing. pip install $2"
 }
 
-print_step() {
-  local step="$1"
-  local label="$2"
-  echo ""
-  printf '%0.s─' {1..60}; echo
-  echo "  Step $step — $label"
-  printf '%0.s─' {1..60}; echo
-  echo ""
-}
+# ── Argument parsing ──────────────────────────────────────────────────────────
+REPO_PATH=""
+FROM_STAGE="init"
+ONLY_STAGE=""
+RESUME_RULES=""
 
-# ── Get repo path ─────────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --from)  FROM_STAGE="$2"; shift 2 ;;
+        --only)  ONLY_STAGE="$2"; shift 2 ;;
+        --resume-rules) RESUME_RULES="--only-unprocessed"; shift ;;
+        *)       REPO_PATH="${1%/}"; shift ;;
+    esac
+done
 
 print_header
-check_deps
 
-if [[ $# -ge 1 ]]; then
-  REPO_PATH="${1%/}"
-else
-  printf "  Enter repository path: "
-  read -r REPO_PATH
-  REPO_PATH="${REPO_PATH%/}"
+# ── Must run from project root (where kb/ lives) ──────────────────────────────
+if [[ ! -d "kb" ]]; then
+    print_error "Run this from the project root (the directory containing kb/)."
 fi
 
-# Resolve to absolute path
-REPO_PATH="$(cd "$REPO_PATH" 2>/dev/null && pwd)" || {
-  echo "  ✗ Directory not found: $REPO_PATH"
-  exit 1
-}
+# ── Dependencies ──────────────────────────────────────────────────────────────
+print_info "Checking dependencies..."
+check_dependency tree
+check_dependency python3
+check_python_module psycopg "psycopg[binary]"
+check_python_module neo4j neo4j
+check_python_module chromadb chromadb
+check_python_module openai openai
+check_python_module bert_score bert-score
+check_python_module dotenv python-dotenv
+print_success "Dependencies OK"
 
+# ── Repo path ─────────────────────────────────────────────────────────────────
+if [[ -z "$REPO_PATH" ]]; then
+    printf "  Enter repository path: "
+    read -r REPO_PATH
+    REPO_PATH="${REPO_PATH%/}"
+fi
+[[ -d "$REPO_PATH" ]] || print_error "Directory not found: $REPO_PATH"
+REPO_PATH="$(cd "$REPO_PATH" && pwd)"
 REPO_NAME="$(basename "$REPO_PATH")"
-OUTPUT_JSON="repo-tree-${REPO_NAME}.json"
 
-echo ""
-echo "  Repository : $REPO_PATH"
-echo "  Repo name  : $REPO_NAME"
-echo "  Output JSON: $OUTPUT_JSON"
+print_info "Repository : $REPO_PATH"
+print_info "Repo name  : $REPO_NAME"
 
-# ── Confirm ───────────────────────────────────────────────────────────────────
+# ── Determine which stages to run ─────────────────────────────────────────────
+if [[ -n "$ONLY_STAGE" ]]; then
+    START_IDX=$(stage_index "$ONLY_STAGE")
+    END_IDX=$START_IDX
+    [[ "$START_IDX" == "-1" ]] && print_error "Unknown stage: $ONLY_STAGE"
+    print_info "Running ONLY stage: $ONLY_STAGE"
+else
+    START_IDX=$(stage_index "$FROM_STAGE")
+    END_IDX=$((${#STAGES[@]} - 1))
+    [[ "$START_IDX" == "-1" ]] && print_error "Unknown stage: $FROM_STAGE"
+    print_info "Running stages: ${STAGES[$START_IDX]} → ${STAGES[$END_IDX]}"
+fi
+
+should_run() {
+    local idx; idx=$(stage_index "$1")
+    [[ "$idx" -ge "$START_IDX" && "$idx" -le "$END_IDX" ]]
+}
 
 echo ""
 printf "  Proceed? [Y/n]: "
-read -r confirm
-confirm="${confirm:-Y}"
-if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-  echo "  Aborted."
-  exit 0
-fi
+read -r confirm; confirm="${confirm:-Y}"
+[[ "$confirm" =~ ^[Yy]$ ]] || { print_info "Aborted."; exit 0; }
 
-# ── Step 1: tree → JSON ───────────────────────────────────────────────────────
+TEMP_JSON=$(mktemp)
+trap 'rm -f "$TEMP_JSON"' EXIT
 
-print_step 1 "Scanning repository → $OUTPUT_JSON"
-
-tree -f "$REPO_PATH" | python3 "$TREE_TO_JSON" > "$OUTPUT_JSON"
-
-FILE_COUNT=$(python3 -c "import json; d=json.load(open('$OUTPUT_JSON')); print(len(d))")
-echo "  ✓ $FILE_COUNT files written to $OUTPUT_JSON"
-
-# ── Step 2: Populate File/Directory nodes ─────────────────────────────────────
-
-print_step 2 "Ingesting file structure into Neo4j"
-
-python3 "$INGEST_GRAPH" "$OUTPUT_JSON" --clear
-
-# ── Step 3: Build DEPENDS_ON edges ───────────────────────────────────────────
-
-print_step 3 "Building dependency edges"
-
-python3 "$BUILD_DEPS" "$OUTPUT_JSON" --repo "$REPO_PATH"
-
-# ── Step 4: Extract business rules ───────────────────────────────────────────
-
-print_step 4 "Extracting business rules and repository function"
-
-python3 "$EXTRACT_RULES" "$OUTPUT_JSON" --repo "$REPO_PATH"
-
-# ── Done ──────────────────────────────────────────────────────────────────────
-
-print_done() {
-  echo ""
-  printf '%0.s═' {1..60}; echo
-  echo "  ✓ Pipeline complete"
-  echo ""
-  echo "  JSON tree      : $OUTPUT_JSON"
-  echo "  Business rules : business_rules.json"
-  echo "  Repo function  : repo_function.json"
-  echo "  Neo4j          : https://console.neo4j.io"
-  echo ""
-  echo "  Useful Cypher queries:"
-  echo "    MATCH (n) RETURN n"
-  echo "    MATCH (a:File)-[:DEPENDS_ON]->(b:File) RETURN a.name, b.name"
-  echo "    MATCH (a:File)-[:DEPENDS_ON]->(b:File) RETURN a, b"
-  printf '%0.s═' {1..60}; echo
-  echo ""
+generate_tree() {
+    if [[ ! -s "$TEMP_JSON" ]]; then
+        print_info "Scanning file tree..."
+        tree -f "$REPO_PATH" | python3 -m "$TREE_TO_JSON_MOD" > "$TEMP_JSON"
+        local count
+        count=$(python3 -c "import json;print(len(json.load(open('$TEMP_JSON'))))")
+        print_success "Found $count files"
+    fi
 }
 
-print_done
+# ── Stage 1: init ─────────────────────────────────────────────────────────────
+if should_run init; then
+    print_step "init — initialize databases"
+    python3 -m "$INIT_DB_MOD" || print_error "DB init failed"
+    mkdir -p ./chroma_db
+    print_success "Databases initialized"
+fi
+
+# ── Stage 2: scan ─────────────────────────────────────────────────────────────
+if should_run scan; then
+    print_step "scan — file structure + metrics"
+    generate_tree
+    print_info "Populating Neo4j file nodes..."
+    python3 -m "$JSON_TO_GRAPH_MOD" "$TEMP_JSON" --clear || print_error "Neo4j node ingest failed"
+    print_info "Saving file metrics to PostgreSQL..."
+    python3 -m "$METADATA_MOD" "$REPO_PATH" || print_error "Metrics ingest failed"
+    print_success "Scan complete"
+fi
+
+# ── Stage 3: deps ─────────────────────────────────────────────────────────────
+if should_run deps; then
+    print_step "deps — dependency edges"
+    generate_tree
+    python3 -m "$FILE_DEPS_MOD" "$TEMP_JSON" --repo "$REPO_PATH" || print_error "Dependency edges failed"
+    print_success "Dependencies built"
+fi
+
+# ── Stage 4: rules ────────────────────────────────────────────────────────────
+if should_run rules; then
+    print_step "rules — business rules (OpenAI → PostgreSQL)"
+    python3 -m "$EXTRACT_RULES_MOD" --repo "$REPO_NAME" --repo-path "$REPO_PATH" \
+        --no-synthesize $RESUME_RULES || print_error "Rule extraction failed"
+    print_success "Business rules extracted"
+fi
+
+# ── Stage 5: synth ────────────────────────────────────────────────────────────
+if should_run synth; then
+    print_step "synth — key points (OpenAI → PostgreSQL)"
+    python3 -m "$SYNTHESIZE_MOD" --repo "$REPO_NAME" || print_error "Synthesis failed"
+    print_success "Key points synthesized"
+fi
+
+# ── Stage 6: embed ────────────────────────────────────────────────────────────
+if should_run embed; then
+    print_step "embed — BERTScore vectors → ChromaDB"
+    python3 -m "$EMBEDDINGS_MOD" --repo "$REPO_NAME" || print_error "Embedding failed"
+    print_success "Vector store built"
+fi
+
+echo ""
+echo -e "${GREEN}═══ ✓ PIPELINE COMPLETE ═══${NC}"
+echo ""
+echo -e "${BLUE}  PostgreSQL:${NC} repo_analysis (files, business_rules, key_points)"
+echo -e "${BLUE}  Neo4j:${NC} File nodes + CONTAINS + DEPENDS_ON"
+echo -e "${BLUE}  ChromaDB:${NC} groundwork collection"
+echo ""
+echo -e "${BLUE}  Resume examples:${NC}"
+echo "    ./ingestion_pipeline.sh $REPO_PATH --from rules"
+echo "    ./ingestion_pipeline.sh $REPO_PATH --only embed"
+echo "    ./ingestion_pipeline.sh $REPO_PATH --from rules --resume-rules"
+echo ""

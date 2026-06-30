@@ -8,3 +8,6 @@ kb/graph/nopCommerce_tree.json
 chroma_db/*
 *.ipynb
 repo_function.json
+file_metrics.json
+Presentations/*
+cmpt360-a4-main/*

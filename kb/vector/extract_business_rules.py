@@ -1,19 +1,20 @@
 """
-Groundwork — Business Rules Extractor
-Reads each code file, sends it to OpenAI to extract business rules,
-then synthesizes all rules into key points describing the repo's function.
+Groundwork — Stage 3: Business Rules → PostgreSQL (OpenAI)
 
-Outputs:
-    business_rules.json  — { filename: [rule1, rule2, ...] }
-    repo_function.json   — ["key point 1", "key point 2", ...]
+Reads the file list from PostgreSQL (populated by metadata.py), extracts
+business rules as user stories via OpenAI, and writes them to the
+business_rules table. Marks each file rules_extracted = TRUE.
+
+Resumable: with --only-unprocessed it skips files already done, so an
+interrupted run can be continued without redoing work.
 
 Usage:
-    python3 extract_rules.py <files.json> --repo <path/to/repo>
-    python3 extract_rules.py flask_files.json --repo ./flask
-    python3 extract_rules.py flask_files.json --repo ./flask --lines 100
+    python3 extract_business_rules.py --repo flask --repo-path ./flask
+    python3 extract_business_rules.py --repo flask --repo-path ./flask --only-unprocessed
+    python3 extract_business_rules.py --repo flask --repo-path ./flask --no-synthesize
 
 Requirements:
-    pip install openai python-dotenv
+    pip install openai psycopg python-dotenv
 """
 
 import json
@@ -22,19 +23,22 @@ import sys
 import time
 import argparse
 from pathlib import Path
+
 from openai import OpenAI
 from dotenv import load_dotenv
 
-# ── Config ────────────────────────────────────────────────────────────────────
+from kb.relationaldb.initialize_db import (
+    get_connection, save_business_rules, save_key_points,
+    get_files, load_business_rules_from_db, list_repositories,
+)
+
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-MODEL = "gpt-5-mini"
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
+MODEL           = "gpt-5-mini"
 SYNTHESIS_MODEL = "gpt-5"
-
-MAX_FILE_LINES = 80
-RETRY_DELAY = 2
+MAX_FILE_LINES  = 80
+RETRY_DELAY     = 2
 
 CODE_LANGUAGES = {
     "Python", "JavaScript", "TypeScript",
@@ -42,8 +46,6 @@ CODE_LANGUAGES = {
     "Java", "Kotlin", "C#", "C++", "C", "C/C++ Header",
     "Go", "Rust", "Ruby", "PHP", "Swift", "Shell", "Batch", "SQL",
 }
-
-# ── Prompts ───────────────────────────────────────────────────────────────────
 
 FILE_RULES_SYSTEM = "You extract business rules from code."
 
@@ -60,12 +62,6 @@ Write this as natural, readable English.
 If the file has no meaningful business logic, return an empty array [].
 Respond ONLY with a JSON array of strings. No preamble, no markdown fences, no explanation.
 
-Example:
-[
-  "As a customer, I want the system to prevent me from ordering out-of-stock items so that I don't place orders that cannot be fulfilled.",
-  "As a store owner, I want all admin endpoints to require authentication so that unauthorized users cannot access sensitive data."
-]
-
 File: {filename}
 Language: {language}
 
@@ -74,12 +70,10 @@ Parsed File JSON:
 {file_json}
 """
 
-
 SYNTHESIS_PROMPT = """\
 Your task is to produce a repository capability catalog.
 
 For every meaningful behavior that appears repeatedly across the codebase:
-
 - create one capability statement
 - keep it specific
 - avoid architectural marketing language
@@ -88,53 +82,29 @@ For every meaningful behavior that appears repeatedly across the codebase:
 Output 30-100 capabilities if needed.
 
 Respond ONLY with a JSON array of strings.
-No markdown.
-No explanations.
-No headings.
+No markdown. No explanations. No headings.
 
 Business Rules:
 {rules_block}
 """
-# ── OpenAI Client ─────────────────────────────────────────────────────────────
+
 
 def get_client() -> OpenAI:
     if not OPENAI_API_KEY:
         print("Error: OPENAI_API_KEY not set in .env or environment.")
         sys.exit(1)
-
     return OpenAI(api_key=OPENAI_API_KEY)
 
 
-def call_openai(
-    client: OpenAI,
-    prompt: str,
-    model: str,
-    system: str = None,
-    retries: int = 3,
-) -> str:
-
+def call_openai(client, prompt, model, system=None, retries=3) -> str:
     for attempt in range(retries):
         try:
             messages = []
-
             if system:
-                messages.append({
-                    "role": "system",
-                    "content": system,
-                })
-
-            messages.append({
-                "role": "user",
-                "content": prompt,
-            })
-
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-            )
-
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+            response = client.chat.completions.create(model=model, messages=messages)
             return response.choices[0].message.content.strip()
-
         except Exception as e:
             if attempt < retries - 1:
                 print(f"\n  API error: {e} — retrying in {RETRY_DELAY}s...")
@@ -144,17 +114,10 @@ def call_openai(
 
 
 def parse_json_response(raw: str) -> list:
-    """Safely parse LLM JSON response, stripping any accidental markdown fences."""
     text = raw.strip()
-
     if text.startswith("```"):
         lines = text.split("\n")
-        text = "\n".join(
-            lines[1:-1]
-            if lines[-1].strip() == "```"
-            else lines[1:]
-        )
-
+        text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
     try:
         result = json.loads(text)
         return result if isinstance(result, list) else []
@@ -162,272 +125,140 @@ def parse_json_response(raw: str) -> list:
         return []
 
 
-# ── File Reader ───────────────────────────────────────────────────────────────
-
 def read_file(path: Path, max_lines: int) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
             lines = []
-
             for i, line in enumerate(f):
                 if i >= max_lines:
-                    lines.append(
-                        f"... ({max_lines} lines shown, file continues)"
-                    )
+                    lines.append(f"... ({max_lines} lines shown, file continues)")
                     break
-
                 lines.append(line)
-
         return "".join(lines)
-
     except OSError:
         return ""
 
 
-# ── Step 1: Extract per-file business rules ───────────────────────────────────
-
-def extract_file_rules(
-    files: list[dict],
-    repo_root: Path,
-    client: OpenAI,
-    max_lines: int,
-) -> dict[str, list[str]]:
-
-    business_rules = {}
-    total = len(files)
-
-    print(f"\n  Extracting business rules from {total} files...\n")
-
-    for i, file_meta in enumerate(files):
-        rel = file_meta["relative"]
-        name = file_meta["name"]
-        language = file_meta.get("language", "")
-        full_path = repo_root / rel
-
-        pct = int((i + 1) / total * 40)
-        bar = "█" * pct + "░" * (40 - pct)
-
-        print(
-            f"\r  [{bar}] {i+1}/{total}  {name:<40}",
-            end="",
-            flush=True,
-        )
-
-        code = read_file(full_path, max_lines)
-
-        if not code.strip():
-            continue
-
-        file_json = {
-            "name": name,
-            "relative": rel,
-            "language": language,
-            "content": code,
-        }
-
-        prompt = FILE_RULES_PROMPT.format(
-            filename=name,
-            language=language,
-            file_json=json.dumps(file_json, indent=2),
-        )
-
-        raw = call_openai(
-            client,
-            prompt,
-            MODEL,
-            system=FILE_RULES_SYSTEM,
-        )
-
-        rules = parse_json_response(raw)
-
-        valid_rules = [
-            r for r in rules
-            if isinstance(r, str) and r.strip()
-        ]
-
-        if valid_rules:
-            business_rules[rel] = valid_rules
-
-    print(f"\n\n  ✓ Extracted rules from {len(business_rules)} files.")
-    return business_rules
-
-
-# ── Step 2: Synthesize into repo-level key points ─────────────────────────────
-
-def synthesize_repo_function(
-    business_rules: dict[str, list[str]],
-    client: OpenAI,
-) -> list[str]:
-
+def synthesize_repo_function(business_rules: dict[str, list[str]], client: OpenAI) -> list[str]:
+    """Takes { file_path: [rules] } → list of repo-level key points."""
     print("\n  Synthesizing repository function from all rules...")
-
     lines = []
-
     for rel, rules in business_rules.items():
         lines.append(f"\n{rel}:")
-
         for rule in rules:
             lines.append(f"  - {rule}")
-
     rules_block = "\n".join(lines)
-
-    prompt = SYNTHESIS_PROMPT.format(
-        rules_block=rules_block
-    )
-
-    raw = call_openai(
-        client,
-        prompt,
-        SYNTHESIS_MODEL,
-    )
-
+    prompt = SYNTHESIS_PROMPT.format(rules_block=rules_block)
+    raw = call_openai(client, prompt, SYNTHESIS_MODEL)
     key_points = parse_json_response(raw)
-
     print(f"  ✓ Generated {len(key_points)} key points.")
     return key_points
 
 
-# ── Output ────────────────────────────────────────────────────────────────────
-
-def save_outputs(
-    business_rules: dict[str, list[str]],
-    key_points: list[str],
-    output_dir: Path,
-):
-    rules_path = output_dir / "business_rules.json"
-    func_path = output_dir / "repo_function.json"
-
-    with open(rules_path, "w") as f:
-        json.dump(business_rules, f, indent=2)
-
-    with open(func_path, "w") as f:
-        json.dump(key_points, f, indent=2)
-
-    print(f"\n  Saved → {rules_path}")
-    print(f"  Saved → {func_path}")
+def resolve_repo(conn, requested):
+    repos = list_repositories(conn)
+    if not repos:
+        print("Error: no repositories in DB. Run metadata.py first.")
+        sys.exit(1)
+    if requested:
+        return requested
+    if len(repos) == 1:
+        print(f"  Using only repository in DB: {repos[0]}")
+        return repos[0]
+    print("  Multiple repositories — specify one with --repo:")
+    for r in repos:
+        print(f"    - {r}")
+    sys.exit(1)
 
 
-def print_summary(
-    business_rules: dict,
-    key_points: list,
-):
-    total_rules = sum(
-        len(v) for v in business_rules.values()
-    )
+def run(repo_name, repo_path, max_lines, only_unprocessed, synthesize):
+    repo_root = Path(repo_path)
+    conn = get_connection()
 
-    print("\n  ┌─ Summary ───────────────────────────────────┐")
-    print(f"  │  Files with rules : {len(business_rules):<6}                  │")
-    print(f"  │  Total rules      : {total_rules:<6}                  │")
-    print(f"  │  Key points       : {len(key_points):<6}                  │")
-    print("  └─────────────────────────────────────────────┘")
+    try:
+        # Pull files from the DB (metadata.py must have run first)
+        files = get_files(conn, repo_name, only_unprocessed=only_unprocessed)
+        files = [f for f in files if f["language"] in CODE_LANGUAGES]
 
-    print("\n  Repository key points:")
+        if not files:
+            print(f"  No files to process for '{repo_name}'.")
+            if only_unprocessed:
+                print("  (all files already have rules — drop --only-unprocessed to redo)")
+            return
 
-    for i, point in enumerate(key_points, 1):
-        print(f"    {i:>2}. {point}")
+        client = get_client()
+        total = len(files)
+        print(f"\n  Extracting rules for {total} files (repo: {repo_name})...\n")
 
-    print()
+        for i, file_meta in enumerate(files):
+            rel      = file_meta["file_path"]
+            file_id  = file_meta["file_id"]
+            language = file_meta["language"]
+            name     = Path(rel).name
 
+            pct = int((i + 1) / total * 40)
+            bar = "█" * pct + "░" * (40 - pct)
+            print(f"\r  [{bar}] {i+1}/{total}  {name:<40}", end="", flush=True)
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
+            code = read_file(repo_root / rel, max_lines)
+            rules = []
+            if code.strip():
+                file_json = {"name": name, "relative": rel,
+                             "language": language, "content": code}
+                prompt = FILE_RULES_PROMPT.format(
+                    filename=name, language=language,
+                    file_json=json.dumps(file_json, indent=2),
+                )
+                raw = call_openai(client, prompt, MODEL, system=FILE_RULES_SYSTEM)
+                rules = [r for r in parse_json_response(raw)
+                         if isinstance(r, str) and r.strip()]
+
+            # Save rules + mark file processed (one commit per file = safe resume)
+            save_business_rules(conn, file_id, rules)
+            conn.commit()
+
+        print(f"\n\n  ✓ Rules extracted and saved to PostgreSQL.")
+
+        # Optional synthesis from the FULL rule set in the DB
+        if synthesize:
+            all_rules = load_business_rules_from_db(conn, repo_name)
+            if all_rules:
+                key_points = synthesize_repo_function(all_rules, client)
+                save_key_points(conn, repo_name, key_points)
+                conn.commit()
+                print(f"  ✓ {len(key_points)} key points saved to key_points table.")
+
+    finally:
+        conn.close()
+
+    print("\n  Done.\n")
+
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Groundwork — extract business rules and repo function via OpenAI"
+        description="Groundwork — extract business rules into PostgreSQL (OpenAI)"
     )
-
-    parser.add_argument(
-        "json_file",
-        help="Path to JSON file list from tree_to_json.py",
-    )
-
-    parser.add_argument(
-        "--repo",
-        required=True,
-        help="Path to the repository root on disk",
-    )
-
-    parser.add_argument(
-        "--lines",
-        type=int,
-        default=MAX_FILE_LINES,
-        help=f"Max lines to read per file (default: {MAX_FILE_LINES})",
-    )
-
-    parser.add_argument(
-        "--output",
-        default=".",
-        help="Directory to save output JSON files (default: .)",
-    )
-
-    parser.add_argument(
-        "--rules-only",
-        action="store_true",
-        help="Only extract per-file rules, skip synthesis step",
-    )
-
+    parser.add_argument("--repo", help="Repository name as stored in the DB")
+    parser.add_argument("--repo-path", required=True, help="Path to repository root on disk")
+    parser.add_argument("--lines", type=int, default=MAX_FILE_LINES)
+    parser.add_argument("--only-unprocessed", action="store_true",
+                        help="Skip files whose rules were already extracted (resume)")
+    parser.add_argument("--no-synthesize", action="store_true",
+                        help="Skip the key-point synthesis step")
     args = parser.parse_args()
 
-    json_path = Path(args.json_file)
-    repo_root = Path(args.repo)
-    output_dir = Path(args.output)
-
-    if not json_path.exists():
-        print(f"Error: '{json_path}' not found.")
+    if not Path(args.repo_path).exists():
+        print(f"Error: repo path '{args.repo_path}' not found.")
         sys.exit(1)
 
-    if not repo_root.exists():
-        print(f"Error: repo '{repo_root}' not found.")
-        sys.exit(1)
+    conn = get_connection()
+    try:
+        repo_name = resolve_repo(conn, args.repo)
+    finally:
+        conn.close()
 
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    with open(json_path) as f:
-        all_files = json.load(f)
-
-    files = [
-        f
-        for f in all_files
-        if f.get("language") in CODE_LANGUAGES
-    ]
-
-    print(f"\n  Loaded {len(files)} code files from {json_path}")
-    print(f"  Reading up to {args.lines} lines per file")
-    print(
-        f"  Using {MODEL} for file rules, "
-        f"{SYNTHESIS_MODEL} for synthesis"
-    )
-
-    client = get_client()
-
-    business_rules = extract_file_rules(
-        files,
-        repo_root,
-        client,
-        args.lines,
-    )
-
-    key_points = []
-
-    if not args.rules_only and business_rules:
-        key_points = synthesize_repo_function(
-            business_rules,
-            client,
-        )
-
-    save_outputs(
-        business_rules,
-        key_points,
-        output_dir,
-    )
-
-    print_summary(
-        business_rules,
-        key_points,
-    )
+    run(repo_name, args.repo_path, args.lines,
+        args.only_unprocessed, not args.no_synthesize)
 
 
 if __name__ == "__main__":
