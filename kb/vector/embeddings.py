@@ -27,7 +27,15 @@ from kb.relationaldb.initialize_db import (
 
 load_dotenv()
 
-CHROMA_COLLECTION = "groundwork"
+CHROMA_COLLECTION = "groundwork"  # base name; per-repo becomes groundwork_<repo>
+
+
+def collection_name_for(repo_name: str) -> str:
+    """Per-repo collection name. Each repo has its own collection because the
+    vector dimension (= key-point count) differs per repo, and ChromaDB locks
+    dimension per collection."""
+    safe = "".join(c if c.isalnum() else "_" for c in repo_name.lower())
+    return f"{CHROMA_COLLECTION}_{safe}"
 CHROMA_DB_PATH    = "./chroma_db"
 BERT_MODEL        = "distilbert-base-uncased"
 
@@ -141,7 +149,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Groundwork — build ChromaDB vectors from PostgreSQL")
     parser.add_argument("--repo", help="Repository name as stored in the DB")
-    parser.add_argument("--collection", default=CHROMA_COLLECTION)
+    parser.add_argument("--collection", default=None,
+                        help="Override collection name (default: groundwork_<repo>)")
     parser.add_argument("--db", default=CHROMA_DB_PATH)
     args = parser.parse_args()
 
@@ -169,7 +178,8 @@ def main():
     bert_score_fn = load_bert_scorer()
     print(f"  ✓ BERTScore model loaded.\n")
 
-    collection = get_collection(args.db, args.collection, expected_dim=len(key_points))
+    coll_name = args.collection or collection_name_for(repo_name)
+    collection = get_collection(args.db, coll_name, expected_dim=len(key_points))
     build_vectorstore(business_rules, key_points, collection, bert_score_fn)
     print_summary(collection, key_points)
 

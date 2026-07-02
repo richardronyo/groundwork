@@ -43,6 +43,12 @@ load_dotenv()
 
 CHROMA_DB_PATH    = "./chroma_db"
 CHROMA_COLLECTION = "groundwork"
+
+
+def collection_name_for(repo_name: str) -> str:
+    """Per-repo ChromaDB collection name (matches embeddings.py)."""
+    safe = "".join(c if c.isalnum() else "_" for c in (repo_name or "").lower())
+    return f"{CHROMA_COLLECTION}_{safe}"
 BERT_MODEL        = "distilbert-base-uncased"
 
 DB_CONFIG = {
@@ -68,8 +74,30 @@ def load_bert_scorer():
         sys.exit(1)
 
 
+def list_repos() -> List[str]:
+    """All repositories present in the knowledge base."""
+    conn = psycopg.connect(**DB_CONFIG)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT repository_name FROM files ORDER BY repository_name")
+            return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def resolve_repo_name(repo_name: str = None) -> Optional[str]:
+    """If repo_name is given, use it. If not and only one repo exists, use that.
+    If multiple exist and none specified, return None (caller should prompt)."""
+    if repo_name:
+        return repo_name
+    repos = list_repos()
+    if len(repos) == 1:
+        return repos[0]
+    return None
+
+
 def load_key_points_from_db(repo_name: str = None) -> List[str]:
-    """Key points now live in PostgreSQL, not repo_function.json."""
+    """Key points live in PostgreSQL, scoped by repository."""
     conn = psycopg.connect(**DB_CONFIG)
     try:
         with conn.cursor() as cur:
@@ -95,9 +123,14 @@ def score_prompt_against_keypoints(prompt, key_points, bert_score_fn) -> List[fl
     return [float(s.item()) for s in F1]
 
 
-def get_files_for_keypoint(key_point: str, top_n: int) -> List[Dict]:
+def get_files_for_keypoint(key_point: str, top_n: int, repo_name: str = None) -> List[Dict]:
     client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-    collection = client.get_collection(CHROMA_COLLECTION)
+    coll_name = collection_name_for(repo_name)
+    try:
+        collection = client.get_collection(coll_name)
+    except Exception:
+        # Fall back to the legacy single collection if the per-repo one is absent
+        collection = client.get_collection(CHROMA_COLLECTION)
     results = collection.get(include=["documents", "metadatas"])
 
     matching = []
@@ -108,23 +141,23 @@ def get_files_for_keypoint(key_point: str, top_n: int) -> List[Dict]:
     return matching[:top_n]
 
 
-def get_dependencies(file_paths: List[str]) -> Dict[str, List[str]]:
+def get_dependencies(file_paths: List[str], repo_name: str = None) -> Dict[str, List[str]]:
     if not file_paths:
         return {}
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
     try:
         with driver.session() as session:
             result = session.run("""
-                MATCH (f:File)-[:DEPENDS_ON]->(dep:File)
+                MATCH (f:File {repository_name: $repo})-[:DEPENDS_ON]->(dep:File)
                 WHERE f.relative IN $file_paths
                 RETURN f.relative AS source, COLLECT(dep.relative) AS dependencies
-            """, file_paths=file_paths)
+            """, file_paths=file_paths, repo=repo_name)
             return {r["source"]: r["dependencies"] for r in result}
     finally:
         driver.close()
 
 
-def get_business_rules(file_paths: List[str]) -> Dict[str, List[str]]:
+def get_business_rules(file_paths: List[str], repo_name: str = None) -> Dict[str, List[str]]:
     if not file_paths:
         return {}
     conn = psycopg.connect(**DB_CONFIG)
@@ -135,8 +168,9 @@ def get_business_rules(file_paths: List[str]) -> Dict[str, List[str]]:
                 FROM files f
                 JOIN business_rules br ON br.file_id = f.id
                 WHERE f.file_path = ANY(%s)
+                  AND (%s IS NULL OR f.repository_name = %s)
                 GROUP BY f.file_path
-            """, (file_paths,))
+            """, (file_paths, repo_name, repo_name))
             return {row[0]: (row[1] or []) for row in cur.fetchall()}
     finally:
         conn.close()
@@ -318,13 +352,16 @@ class GroundworkRetriever(BaseRetriever):
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun = None
     ) -> List[Document]:
 
+        # Resolve which repo we are querying (may be None if ambiguous)
+        repo = resolve_repo_name(self.repo_name)
+
         # ── Route: repo-level vs file-level ────────────────────────────────
         if self.mode == "repo" or (self.mode == "auto" and is_repo_level_question(query)):
-            return [get_all_key_points_as_document(query, self.repo_name)]
+            return [get_all_key_points_as_document(query, repo)]
 
         # ── File-level retrieval (original flow) ───────────────────────────
-        # 1. Key points from Postgres
-        key_points = load_key_points_from_db(self.repo_name)
+        # 1. Key points from Postgres (repo-scoped)
+        key_points = load_key_points_from_db(repo)
         if not key_points:
             return []
 
@@ -338,15 +375,15 @@ class GroundworkRetriever(BaseRetriever):
             return []
 
         # 3. ChromaDB → top files for the best key point
-        file_matches = get_files_for_keypoint(best_kp, self.top_n)
+        file_matches = get_files_for_keypoint(best_kp, self.top_n, repo)
         if not file_matches:
             return []
 
         file_paths = [m["meta"]["relative"] for m in file_matches]
 
         # 4. Neo4j dependencies + 5. Postgres rules
-        dependencies = get_dependencies(file_paths)
-        rules        = get_business_rules(file_paths)
+        dependencies = get_dependencies(file_paths, repo)
+        rules        = get_business_rules(file_paths, repo)
 
         # 6. Build one Document per file
         docs = []
@@ -479,16 +516,42 @@ def main():
     parser.add_argument("prompt", nargs="?", help="Query prompt")
     parser.add_argument("--top", type=int, default=2, help="Top files to retrieve")
     parser.add_argument("--min-score", type=float, default=0.3)
-    parser.add_argument("--repo", default=None, help="Repository name (optional)")
+    parser.add_argument("--repo", default=None,
+                        help="Repository name to query (required if multiple repos exist)")
+    parser.add_argument("--list-repos", action="store_true",
+                        help="List repositories in the knowledge base and exit")
     parser.add_argument("--mode", default="auto", choices=["auto", "repo", "file"],
                         help="auto-detect (default), force repo-level, or force file-level")
     parser.add_argument("--ask", action="store_true",
                         help="Also generate an LLM answer from the retrieved context")
     args = parser.parse_args()
 
+    if args.list_repos:
+        repos = list_repos()
+        if repos:
+            print("\n  Repositories in the knowledge base:")
+            for r in repos:
+                print(f"    - {r}")
+            print()
+        else:
+            print("\n  No repositories found. Run the ingestion pipeline first.\n")
+        return
+
     if not args.prompt:
         parser.print_help()
         return
+
+    # Resolve repo; if ambiguous and not specified, tell the user to pick one
+    resolved = resolve_repo_name(args.repo)
+    if resolved is None:
+        repos = list_repos()
+        print("\n  Multiple repositories exist — specify one with --repo:")
+        for r in repos:
+            print(f"    - {r}")
+        print("\n  Example: python grab_context.py \"your question\" --repo flask\n")
+        return
+    args.repo = resolved
+    print(f"  Querying repository: {args.repo}")
 
     retriever = GroundworkRetriever(
         top_n=args.top,

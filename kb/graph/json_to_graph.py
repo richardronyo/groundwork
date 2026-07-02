@@ -63,9 +63,11 @@ CODE_LANGUAGES = {
 
 class GraphIngester:
 
-    def __init__(self, uri: str, user: str, password: str):
+    def __init__(self, uri: str, user: str, password: str, repo_name: str):
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
+        self.repo_name = repo_name
         print(f"  Connected to Neo4j at {uri}")
+        print(f"  Repository: {repo_name}")
 
     def close(self):
         self.driver.close()
@@ -73,33 +75,44 @@ class GraphIngester:
     # ── Setup ─────────────────────────────────────────────────────────────────
 
     def create_constraints(self):
+        # uid = "<repo>::<relative>" so the same path in different repos
+        # maps to distinct nodes. AuraDB Free supports single-property
+        # uniqueness (not composite node keys), so we key on a synthetic uid.
         with self.driver.session() as s:
             s.run("""
-                CREATE CONSTRAINT file_relative_unique IF NOT EXISTS
-                FOR (f:File) REQUIRE f.relative IS UNIQUE
+                CREATE CONSTRAINT file_uid_unique IF NOT EXISTS
+                FOR (f:File) REQUIRE f.uid IS UNIQUE
             """)
             s.run("""
-                CREATE CONSTRAINT dir_relative_unique IF NOT EXISTS
-                FOR (d:Directory) REQUIRE d.relative IS UNIQUE
+                CREATE CONSTRAINT dir_uid_unique IF NOT EXISTS
+                FOR (d:Directory) REQUIRE d.uid IS UNIQUE
             """)
         print("  Constraints ensured.")
 
     def clear_graph(self):
+        # Only clear THIS repository's nodes, leaving other repos intact.
         with self.driver.session() as s:
-            s.run("MATCH (n:File) DETACH DELETE n")
-            s.run("MATCH (n:Directory) DETACH DELETE n")
-        print("  Cleared existing File and Directory nodes.")
+            s.run("MATCH (n:File {repository_name: $repo}) DETACH DELETE n",
+                  repo=self.repo_name)
+            s.run("MATCH (n:Directory {repository_name: $repo}) DETACH DELETE n",
+                  repo=self.repo_name)
+        print(f"  Cleared existing nodes for repo '{self.repo_name}'.")
 
     # ── Directory helpers ─────────────────────────────────────────────────────
 
+    def _uid(self, relative: str) -> str:
+        return f"{self.repo_name}::{relative}"
+
     def _ensure_directory_chain(self, tx, relative: str):
+        repo = self.repo_name
         parts = Path(relative).parent.parts
 
         if not parts:
             tx.run("""
-                MERGE (d:Directory {relative: ""})
-                SET d.name = "(root)", d.depth = 0
-            """)
+                MERGE (d:Directory {uid: $uid})
+                SET d.relative = "", d.name = "(root)", d.depth = 0,
+                    d.repository_name = $repo
+            """, uid=self._uid(""), repo=repo)
             return ""
 
         dir_relatives = []
@@ -107,63 +120,69 @@ class GraphIngester:
             dir_relatives.append("/".join(parts[: i + 1]))
 
         tx.run("""
-            MERGE (d:Directory {relative: ""})
-            SET d.name = "(root)", d.depth = 0
-        """)
+            MERGE (d:Directory {uid: $uid})
+            SET d.relative = "", d.name = "(root)", d.depth = 0,
+                d.repository_name = $repo
+        """, uid=self._uid(""), repo=repo)
 
         for i, rel in enumerate(dir_relatives):
             name = parts[i]
             tx.run("""
-                MERGE (d:Directory {relative: $relative})
-                SET d.name  = $name,
-                    d.depth = $depth
-            """, relative=rel, name=name, depth=i + 1)
+                MERGE (d:Directory {uid: $uid})
+                SET d.relative = $relative, d.name = $name,
+                    d.depth = $depth, d.repository_name = $repo
+            """, uid=self._uid(rel), relative=rel, name=name, depth=i + 1, repo=repo)
 
         all_dirs = [""] + dir_relatives
         for i in range(len(all_dirs) - 1):
             tx.run("""
-                MATCH (parent:Directory {relative: $parent})
-                MATCH (child:Directory  {relative: $child})
+                MATCH (parent:Directory {uid: $parent})
+                MATCH (child:Directory  {uid: $child})
                 MERGE (parent)-[:CONTAINS]->(child)
-            """, parent=all_dirs[i], child=all_dirs[i + 1])
+            """, parent=self._uid(all_dirs[i]), child=self._uid(all_dirs[i + 1]))
 
         return dir_relatives[-1]
 
     # ── File node ─────────────────────────────────────────────────────────────
 
     def _ingest_file(self, tx, file_meta: dict):
+        repo = self.repo_name
         relative = file_meta["relative"]
         parent_relative = self._ensure_directory_chain(tx, relative)
 
         tx.run("""
-            MERGE (f:File {relative: $relative})
-            SET f.name       = $name,
+            MERGE (f:File {uid: $uid})
+            SET f.relative   = $relative,
+                f.name       = $name,
                 f.extension  = $extension,
                 f.language   = $language,
-                f.size_bytes = $size_bytes
+                f.size_bytes = $size_bytes,
+                f.repository_name = $repo
         """,
+            uid        = self._uid(relative),
             relative   = relative,
             name       = file_meta["name"],
             extension  = file_meta.get("extension", ""),
             language   = file_meta.get("language", "Other"),
             size_bytes = file_meta.get("size_bytes", 0),
+            repo       = repo,
         )
 
         tx.run("""
-            MATCH (d:Directory {relative: $dir_rel})
-            MATCH (f:File      {relative: $file_rel})
+            MATCH (d:Directory {uid: $dir_uid})
+            MATCH (f:File      {uid: $file_uid})
             MERGE (d)-[:CONTAINS]->(f)
-        """, dir_rel=parent_relative, file_rel=relative)
+        """, dir_uid=self._uid(parent_relative), file_uid=self._uid(relative))
 
     # ── SAME_DIR edges ────────────────────────────────────────────────────────
 
     def _create_same_dir_edges(self, tx):
         tx.run("""
-            MATCH (d:Directory)-[:CONTAINS]->(a:File)
+            MATCH (d:Directory {repository_name: $repo})-[:CONTAINS]->(a:File)
             MATCH (d)-[:CONTAINS]->(b:File)
             WHERE a.relative < b.relative
             MERGE (a)-[:SAME_DIR]->(b)
-        """)
+        """, repo=self.repo_name)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -187,14 +206,21 @@ class GraphIngester:
 
     def _print_summary(self):
         with self.driver.session() as session:
-            file_count = session.run("MATCH (f:File) RETURN count(f) AS c").single()["c"]
-            dir_count  = session.run("MATCH (d:Directory) RETURN count(d) AS c").single()["c"]
-            edge_count = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
+            file_count = session.run(
+                "MATCH (f:File {repository_name: $repo}) RETURN count(f) AS c",
+                repo=self.repo_name).single()["c"]
+            dir_count  = session.run(
+                "MATCH (d:Directory {repository_name: $repo}) RETURN count(d) AS c",
+                repo=self.repo_name).single()["c"]
+            edge_count = session.run("""
+                MATCH (a {repository_name: $repo})-[r]->()
+                RETURN count(r) AS c
+            """, repo=self.repo_name).single()["c"]
             lang_rows  = session.run("""
-                MATCH (f:File)
+                MATCH (f:File {repository_name: $repo})
                 RETURN f.language AS lang, count(f) AS c
                 ORDER BY c DESC LIMIT 10
-            """).data()
+            """, repo=self.repo_name).data()
 
         print("  ┌─ Graph Summary ──────────────────────────────┐")
         print(f"  │  File nodes      : {file_count:<6}                    │")
@@ -250,7 +276,9 @@ def main():
         description="Groundwork — ingest tree_to_json.py output into Neo4j"
     )
     parser.add_argument("json_file", help="Path to JSON file list from tree_to_json.py")
-    parser.add_argument("--clear",   action="store_true", help="Clear existing nodes before ingesting")
+    parser.add_argument("--repo", required=True, help="Repository name (scopes all nodes)")
+    parser.add_argument("--clear",   action="store_true",
+                        help="Clear THIS repo's nodes before ingesting")
     args = parser.parse_args()
 
     json_path = Path(args.json_file)
@@ -268,7 +296,7 @@ def main():
     print(f"  Keeping {len(files)} code files, skipping {skipped} non-code files")
     print(f"  Languages: {', '.join(sorted({f['language'] for f in files}))}")
 
-    ingester = GraphIngester(NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD)
+    ingester = GraphIngester(NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, args.repo)
     try:
         ingester.create_constraints()
         if args.clear:

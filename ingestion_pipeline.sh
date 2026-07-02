@@ -3,15 +3,16 @@
 # Groundwork — Unified Ingestion Pipeline (PostgreSQL source of truth)
 #
 # Run from the PROJECT ROOT (the directory containing kb/).
-# Scripts run as modules (python3 -m kb.xxx.yyy) so the kb package imports resolve.
+# Accepts a local path OR a GitHub URL (which it clones into ./repos/).
 #
 # STAGES (run all, or resume from any one):
 #   init  scan  deps  rules  synth  embed
 #
 # Usage:
-#   ./ingestion_pipeline.sh /path/to/repo                 # full run
-#   ./ingestion_pipeline.sh /path/to/repo --from rules    # resume from stage 4
-#   ./ingestion_pipeline.sh /path/to/repo --only embed    # run just one stage
+#   ./ingestion_pipeline.sh /path/to/repo
+#   ./ingestion_pipeline.sh https://github.com/gothinkster/flask-realworld-example-app
+#   ./ingestion_pipeline.sh /path/to/repo --from rules
+#   ./ingestion_pipeline.sh /path/to/repo --only embed
 #   ./ingestion_pipeline.sh /path/to/repo --from rules --resume-rules
 # =============================================================================
 
@@ -68,9 +69,7 @@ done
 print_header
 
 # ── Must run from project root (where kb/ lives) ──────────────────────────────
-if [[ ! -d "kb" ]]; then
-    print_error "Run this from the project root (the directory containing kb/)."
-fi
+[[ -d "kb" ]] || print_error "Run this from the project root (the directory containing kb/)."
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 print_info "Checking dependencies..."
@@ -84,12 +83,29 @@ check_python_module bert_score bert-score
 check_python_module dotenv python-dotenv
 print_success "Dependencies OK"
 
-# ── Repo path ─────────────────────────────────────────────────────────────────
+# ── Repo path (accepts a local path OR a GitHub URL) ──────────────────────────
 if [[ -z "$REPO_PATH" ]]; then
-    printf "  Enter repository path: "
+    printf "  Enter repository path or GitHub URL: "
     read -r REPO_PATH
     REPO_PATH="${REPO_PATH%/}"
 fi
+
+# If it looks like a git URL, clone it into ./repos/<name>
+if [[ "$REPO_PATH" =~ ^https?://|^git@|\.git$ ]] || [[ "$REPO_PATH" == *github.com* ]]; then
+    check_dependency git
+    CLONE_NAME="$(basename "${REPO_PATH%.git}")"
+    CLONE_DIR="./repos/$CLONE_NAME"
+    mkdir -p ./repos
+    if [[ -d "$CLONE_DIR/.git" ]]; then
+        print_info "Repo already cloned at $CLONE_DIR — pulling latest..."
+        git -C "$CLONE_DIR" pull --ff-only || print_info "Pull skipped (local changes or detached)."
+    else
+        print_info "Cloning $REPO_PATH ..."
+        git clone --depth 1 "$REPO_PATH" "$CLONE_DIR" || print_error "git clone failed"
+    fi
+    REPO_PATH="$CLONE_DIR"
+fi
+
 [[ -d "$REPO_PATH" ]] || print_error "Directory not found: $REPO_PATH"
 REPO_PATH="$(cd "$REPO_PATH" && pwd)"
 REPO_NAME="$(basename "$REPO_PATH")"
@@ -146,7 +162,7 @@ if should_run scan; then
     print_step "scan — file structure + metrics"
     generate_tree
     print_info "Populating Neo4j file nodes..."
-    python3 -m "$JSON_TO_GRAPH_MOD" "$TEMP_JSON" --clear || print_error "Neo4j node ingest failed"
+    python3 -m "$JSON_TO_GRAPH_MOD" "$TEMP_JSON" --repo "$REPO_NAME" --clear || print_error "Neo4j node ingest failed"
     print_info "Saving file metrics to PostgreSQL..."
     python3 -m "$METADATA_MOD" "$REPO_PATH" || print_error "Metrics ingest failed"
     print_success "Scan complete"
@@ -187,10 +203,12 @@ echo -e "${GREEN}═══ ✓ PIPELINE COMPLETE ═══${NC}"
 echo ""
 echo -e "${BLUE}  PostgreSQL:${NC} repo_analysis (files, business_rules, key_points)"
 echo -e "${BLUE}  Neo4j:${NC} File nodes + CONTAINS + DEPENDS_ON"
-echo -e "${BLUE}  ChromaDB:${NC} groundwork collection"
+echo -e "${BLUE}  ChromaDB:${NC} groundwork_${REPO_NAME} collection"
+echo ""
+echo -e "${BLUE}  Query it:${NC}"
+echo "    python3 -m kb.grab_context \"What is this codebase?\" --repo $REPO_NAME"
 echo ""
 echo -e "${BLUE}  Resume examples:${NC}"
 echo "    ./ingestion_pipeline.sh $REPO_PATH --from rules"
 echo "    ./ingestion_pipeline.sh $REPO_PATH --only embed"
-echo "    ./ingestion_pipeline.sh $REPO_PATH --from rules --resume-rules"
 echo ""

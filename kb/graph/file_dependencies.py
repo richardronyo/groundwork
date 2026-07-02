@@ -265,16 +265,17 @@ def extract_dependencies(
     return edges
 
 
-def push_edges(edges: list[tuple[str, str]], driver):
-    """Creates DEPENDS_ON edges in Neo4j for all resolved pairs."""
-    print(f"\n  Creating {len(edges)} DEPENDS_ON edges...")
+def push_edges(edges: list[tuple[str, str]], driver, repo_name: str):
+    """Creates DEPENDS_ON edges in Neo4j for all resolved pairs, scoped to one repo.
+    Matches nodes by uid = "<repo>::<relative>" so edges never cross repos."""
+    print(f"\n  Creating {len(edges)} DEPENDS_ON edges for repo '{repo_name}'...")
 
     def _create_edge(tx, source, target):
         tx.run("""
-            MATCH (a:File {relative: $source})
-            MATCH (b:File {relative: $target})
+            MATCH (a:File {uid: $source_uid})
+            MATCH (b:File {uid: $target_uid})
             MERGE (a)-[:DEPENDS_ON]->(b)
-        """, source=source, target=target)
+        """, source_uid=f"{repo_name}::{source}", target_uid=f"{repo_name}::{target}")
 
     with driver.session() as session:
         for i, (source, target) in enumerate(edges):
@@ -342,9 +343,10 @@ def main():
     if not edges:
         sys.exit(0)
 
+    repo_name = Path(args.repo).name
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
     try:
-        push_edges(edges, driver)
+        push_edges(edges, driver, repo_name)
     finally:
         driver.close()
 

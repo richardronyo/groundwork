@@ -263,6 +263,65 @@ def get_repo_status(conn, repository_name):
     }
 
 
+# ── Clearing / teardown ───────────────────────────────────────────────────────
+
+def clear_repo(conn, repository_name):
+    """
+    Removes a single repository from PostgreSQL: its files (business_rules
+    cascade via ON DELETE CASCADE) and its key points.
+    Returns a dict of how many rows were removed.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) FROM files WHERE repository_name = %s",
+            (repository_name,),
+        )
+        file_count = cur.fetchone()[0]
+
+        cur.execute("""
+            SELECT COUNT(*) FROM business_rules b
+            JOIN files f ON f.id = b.file_id
+            WHERE f.repository_name = %s
+        """, (repository_name,))
+        rule_count = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT COUNT(*) FROM key_points WHERE repository_name = %s",
+            (repository_name,),
+        )
+        kp_count = cur.fetchone()[0]
+
+        # business_rules go away automatically via ON DELETE CASCADE
+        cur.execute("DELETE FROM files WHERE repository_name = %s", (repository_name,))
+        cur.execute("DELETE FROM key_points WHERE repository_name = %s", (repository_name,))
+
+    conn.commit()
+    return {"files": file_count, "business_rules": rule_count, "key_points": kp_count}
+
+
+def clear_all(conn):
+    """
+    Wipes ALL data from PostgreSQL (every repository). Truncates the three
+    tables and resets their id sequences. Schema is preserved.
+    """
+    with conn.cursor() as cur:
+        # RESTART IDENTITY resets BIGSERIAL counters; CASCADE handles FKs
+        cur.execute("TRUNCATE TABLE business_rules, key_points, files RESTART IDENTITY CASCADE")
+    conn.commit()
+
+
+def drop_all_tables(conn):
+    """
+    Hard reset: drops the three tables entirely. Use init_db() afterward to
+    recreate them. Rarely needed — clear_all() is usually enough.
+    """
+    with conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS business_rules CASCADE")
+        cur.execute("DROP TABLE IF EXISTS key_points CASCADE")
+        cur.execute("DROP TABLE IF EXISTS files CASCADE")
+    conn.commit()
+
+
 if __name__ == "__main__":
     create_db()
     init_db()
