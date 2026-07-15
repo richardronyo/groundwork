@@ -12,3 +12,9 @@ file_metrics.json
 Presentations/*
 cmpt360-a4-main/*
 repos/*
+generated_tests/*
+__pycache__/*
+.pytest_cache/*
+kb/*/__pycache__/*
+kb/__pycache__/*
+kuzu_db/*

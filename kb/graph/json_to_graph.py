@@ -1,284 +1,269 @@
 """
-Groundwork — Neo4j File Structure Ingester
-Reads the JSON output from tree_to_json.py and populates a Neo4j graph
-with File nodes and CONTAINS / SAME_DIR relationship edges.
+Groundwork — Kùzu File Structure Ingester
+Reads the JSON output from tree_to_json.py and populates the embedded Kùzu
+graph with File / Directory nodes and CONTAINS / SAME_DIR edges.
+
+Replaces the Neo4j version: no server, no cloud, no per-node network calls.
+All rows are built in memory and written in UNWIND batches.
 
 Usage:
-    python3 json_to_graph.py <files.json>
-    python3 json_to_graph.py <files.json> --clear
+    python3 -m kb.graph.json_to_graph <files.json> --repo flask
+    python3 -m kb.graph.json_to_graph <files.json> --repo flask --clear
 
+Requirements:
+    pip install kuzu
 """
 
 import json
 import argparse
-import os
 import sys
 from pathlib import Path
-from neo4j import GraphDatabase
-from dotenv import load_dotenv
 
-
-# ── Neo4j connection ──────────────────────────────────────────────────────────
-load_dotenv()
-
-NEO4J_URI      = os.getenv("NEO4J_URI")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+from kb.graph.kuzu_store import (
+    get_connection, uid_for, batched, scalar, rows_to_dicts,
+    clear_repo, KUZU_DB_PATH,
+)
 
 # ── Scripting / code file filter ──────────────────────────────────────────────
 
 CODE_LANGUAGES = {
-    "Python",
-    "JavaScript",
-    "TypeScript",
-    "JavaScript (React)",
-    "TypeScript (React)",
-    "Java",
-    "Kotlin",
-    "C#",
-    "C++",
-    "C",
-    "C/C++ Header",
-    "Go",
-    "Rust",
-    "Ruby",
-    "PHP",
-    "Swift",
-    "Shell",
-    "Batch",
-    "SQL",
+    "Python", "JavaScript", "TypeScript",
+    "JavaScript (React)", "TypeScript (React)",
+    "Java", "Kotlin", "C#", "C++", "C", "C/C++ Header",
+    "Go", "Rust", "Ruby", "PHP", "Swift", "Shell", "Batch", "SQL",
 }
-
-# ── Schema ────────────────────────────────────────────────────────────────────
-#
-#  (:Directory {relative, name, depth})
-#  (:File      {relative, name, extension, language, size_bytes})
-#
-#  (:Directory)-[:CONTAINS]->(:File)
-#  (:Directory)-[:CONTAINS]->(:Directory)
-#  (:File)-[:SAME_DIR]->(:File)
-#
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class GraphIngester:
 
-    def __init__(self, uri: str, user: str, password: str, repo_name: str):
-        self.driver = GraphDatabase.driver(uri, auth=(user, password))
+    def __init__(self, repo_name: str, db_path: str = None):
         self.repo_name = repo_name
-        print(f"  Connected to Neo4j at {uri}")
+        self.db_path = db_path or KUZU_DB_PATH
+        self.conn = get_connection(self.db_path)
+        print(f"  Kùzu graph: {self.db_path} (embedded — no server)")
         print(f"  Repository: {repo_name}")
 
     def close(self):
-        self.driver.close()
-
-    # ── Setup ─────────────────────────────────────────────────────────────────
-
-    def create_constraints(self):
-        # uid = "<repo>::<relative>" so the same path in different repos
-        # maps to distinct nodes. AuraDB Free supports single-property
-        # uniqueness (not composite node keys), so we key on a synthetic uid.
-        with self.driver.session() as s:
-            s.run("""
-                CREATE CONSTRAINT file_uid_unique IF NOT EXISTS
-                FOR (f:File) REQUIRE f.uid IS UNIQUE
-            """)
-            s.run("""
-                CREATE CONSTRAINT dir_uid_unique IF NOT EXISTS
-                FOR (d:Directory) REQUIRE d.uid IS UNIQUE
-            """)
-        print("  Constraints ensured.")
-
-    def clear_graph(self):
-        # Only clear THIS repository's nodes, leaving other repos intact.
-        with self.driver.session() as s:
-            s.run("MATCH (n:File {repository_name: $repo}) DETACH DELETE n",
-                  repo=self.repo_name)
-            s.run("MATCH (n:Directory {repository_name: $repo}) DETACH DELETE n",
-                  repo=self.repo_name)
-        print(f"  Cleared existing nodes for repo '{self.repo_name}'.")
-
-    # ── Directory helpers ─────────────────────────────────────────────────────
+        pass  # embedded; nothing to disconnect
 
     def _uid(self, relative: str) -> str:
-        return f"{self.repo_name}::{relative}"
+        return uid_for(self.repo_name, relative)
 
-    def _ensure_directory_chain(self, tx, relative: str):
+    def clear_graph(self):
+        removed = clear_repo(self.conn, self.repo_name)
+        print(f"  Cleared {removed} existing nodes for repo '{self.repo_name}'.")
+
+    # ── Row building (pure Python, no DB calls) ───────────────────────────────
+
+    def _build_rows(self, files: list[dict]):
+        """
+        Walks the file list once and produces every row we need:
+          dir_rows, file_rows, contains_dir_dir, contains_dir_file
+        Building these in memory means the DB is written in a handful of
+        batched statements instead of thousands of individual queries.
+        """
         repo = self.repo_name
-        parts = Path(relative).parent.parts
+        dirs = {}                 # relative -> row
+        file_rows = []
+        contains_dd = set()       # (parent_rel, child_rel)
+        contains_df = []          # (dir_rel, file_rel)
 
-        if not parts:
-            tx.run("""
-                MERGE (d:Directory {uid: $uid})
-                SET d.relative = "", d.name = "(root)", d.depth = 0,
-                    d.repository_name = $repo
-            """, uid=self._uid(""), repo=repo)
-            return ""
+        # Root directory always exists
+        dirs[""] = {"uid": self._uid(""), "relative": "", "name": "(root)",
+                    "depth": 0, "repo": repo}
 
-        dir_relatives = []
-        for i in range(len(parts)):
-            dir_relatives.append("/".join(parts[: i + 1]))
+        for fm in files:
+            relative = fm["relative"]
+            parts = Path(relative).parent.parts
 
-        tx.run("""
-            MERGE (d:Directory {uid: $uid})
-            SET d.relative = "", d.name = "(root)", d.depth = 0,
-                d.repository_name = $repo
-        """, uid=self._uid(""), repo=repo)
+            # Ensure every ancestor directory exists, and link the chain
+            chain = [""]
+            for i in range(len(parts)):
+                rel = "/".join(parts[: i + 1])
+                chain.append(rel)
+                if rel not in dirs:
+                    dirs[rel] = {"uid": self._uid(rel), "relative": rel,
+                                 "name": parts[i], "depth": i + 1, "repo": repo}
+            for i in range(len(chain) - 1):
+                contains_dd.add((chain[i], chain[i + 1]))
 
-        for i, rel in enumerate(dir_relatives):
-            name = parts[i]
-            tx.run("""
-                MERGE (d:Directory {uid: $uid})
-                SET d.relative = $relative, d.name = $name,
-                    d.depth = $depth, d.repository_name = $repo
-            """, uid=self._uid(rel), relative=rel, name=name, depth=i + 1, repo=repo)
+            parent_rel = chain[-1]
+            file_rows.append({
+                "uid": self._uid(relative),
+                "relative": relative,
+                "name": fm["name"],
+                "extension": fm.get("extension", ""),
+                "language": fm.get("language", "Other"),
+                "size_bytes": int(fm.get("size_bytes", 0) or 0),
+                "repo": repo,
+            })
+            contains_df.append((parent_rel, relative))
 
-        all_dirs = [""] + dir_relatives
-        for i in range(len(all_dirs) - 1):
-            tx.run("""
-                MATCH (parent:Directory {uid: $parent})
-                MATCH (child:Directory  {uid: $child})
-                MERGE (parent)-[:CONTAINS]->(child)
-            """, parent=self._uid(all_dirs[i]), child=self._uid(all_dirs[i + 1]))
+        return (list(dirs.values()), file_rows,
+                sorted(contains_dd), contains_df)
 
-        return dir_relatives[-1]
+    # ── Batched writes ────────────────────────────────────────────────────────
 
-    # ── File node ─────────────────────────────────────────────────────────────
+    def _insert_dirs(self, dir_rows):
+        for chunk in batched(dir_rows):
+            self.conn.execute("""
+                UNWIND $rows AS row
+                MERGE (d:Directory {uid: row.uid})
+                SET d.relative = row.relative,
+                    d.name = row.name,
+                    d.depth = row.depth,
+                    d.repository_name = row.repo
+            """, {"rows": chunk})
 
-    def _ingest_file(self, tx, file_meta: dict):
-        repo = self.repo_name
-        relative = file_meta["relative"]
-        parent_relative = self._ensure_directory_chain(tx, relative)
+    def _insert_files(self, file_rows):
+        total = len(file_rows)
+        done = 0
+        for chunk in batched(file_rows):
+            self.conn.execute("""
+                UNWIND $rows AS row
+                MERGE (f:File {uid: row.uid})
+                SET f.relative = row.relative,
+                    f.name = row.name,
+                    f.extension = row.extension,
+                    f.language = row.language,
+                    f.size_bytes = row.size_bytes,
+                    f.repository_name = row.repo
+            """, {"rows": chunk})
+            done += len(chunk)
+            pct = int(done / total * 40)
+            bar = "█" * pct + "░" * (40 - pct)
+            print(f"\r  [{bar}] {done}/{total}", end="", flush=True)
+        print()
 
-        tx.run("""
-            MERGE (f:File {uid: $uid})
-            SET f.relative   = $relative,
-                f.name       = $name,
-                f.extension  = $extension,
-                f.language   = $language,
-                f.size_bytes = $size_bytes,
-                f.repository_name = $repo
-        """,
-            uid        = self._uid(relative),
-            relative   = relative,
-            name       = file_meta["name"],
-            extension  = file_meta.get("extension", ""),
-            language   = file_meta.get("language", "Other"),
-            size_bytes = file_meta.get("size_bytes", 0),
-            repo       = repo,
-        )
+    def _insert_contains(self, contains_dd, contains_df):
+        # Directory -> Directory
+        for chunk in batched([{"s": self._uid(a), "t": self._uid(b)}
+                              for a, b in contains_dd]):
+            self.conn.execute("""
+                UNWIND $rows AS row
+                MATCH (a:Directory {uid: row.s}), (b:Directory {uid: row.t})
+                MERGE (a)-[:CONTAINS]->(b)
+            """, {"rows": chunk})
 
-        tx.run("""
-            MATCH (d:Directory {uid: $dir_uid})
-            MATCH (f:File      {uid: $file_uid})
-            MERGE (d)-[:CONTAINS]->(f)
-        """, dir_uid=self._uid(parent_relative), file_uid=self._uid(relative))
+        # Directory -> File
+        for chunk in batched([{"s": self._uid(a), "t": self._uid(b)}
+                              for a, b in contains_df]):
+            self.conn.execute("""
+                UNWIND $rows AS row
+                MATCH (a:Directory {uid: row.s}), (b:File {uid: row.t})
+                MERGE (a)-[:CONTAINS]->(b)
+            """, {"rows": chunk})
 
-    # ── SAME_DIR edges ────────────────────────────────────────────────────────
-
-    def _create_same_dir_edges(self, tx):
-        tx.run("""
+    def _create_same_dir_edges(self):
+        self.conn.execute("""
             MATCH (d:Directory {repository_name: $repo})-[:CONTAINS]->(a:File)
             MATCH (d)-[:CONTAINS]->(b:File)
             WHERE a.relative < b.relative
             MERGE (a)-[:SAME_DIR]->(b)
-        """, repo=self.repo_name)
+        """, {"repo": self.repo_name})
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def ingest(self, files: list[dict]):
         total = len(files)
-        print(f"\n  Ingesting {total} code files into Neo4j...\n")
+        print(f"\n  Building rows for {total} code files...")
+        dir_rows, file_rows, contains_dd, contains_df = self._build_rows(files)
+        print(f"  {len(dir_rows)} directories, {len(file_rows)} files, "
+              f"{len(contains_dd) + len(contains_df)} CONTAINS edges")
 
-        with self.driver.session() as session:
-            for i, file_meta in enumerate(files):
-                session.execute_write(self._ingest_file, file_meta)
-                pct = int((i + 1) / total * 40)
-                bar = "█" * pct + "░" * (40 - pct)
-                print(f"\r  [{bar}] {i+1}/{total}", end="", flush=True)
+        print(f"\n  Writing directories...")
+        self._insert_dirs(dir_rows)
 
-        print(f"\n\n  Creating SAME_DIR edges...")
-        with self.driver.session() as session:
-            session.execute_write(self._create_same_dir_edges)
+        print(f"  Writing files...")
+        self._insert_files(file_rows)
+
+        print(f"  Writing CONTAINS edges...")
+        self._insert_contains(contains_dd, contains_df)
+
+        print(f"  Creating SAME_DIR edges...")
+        self._create_same_dir_edges()
 
         print("  Done.\n")
         self._print_summary()
 
     def _print_summary(self):
-        with self.driver.session() as session:
-            file_count = session.run(
-                "MATCH (f:File {repository_name: $repo}) RETURN count(f) AS c",
-                repo=self.repo_name).single()["c"]
-            dir_count  = session.run(
-                "MATCH (d:Directory {repository_name: $repo}) RETURN count(d) AS c",
-                repo=self.repo_name).single()["c"]
-            edge_count = session.run("""
-                MATCH (a {repository_name: $repo})-[r]->()
-                RETURN count(r) AS c
-            """, repo=self.repo_name).single()["c"]
-            lang_rows  = session.run("""
-                MATCH (f:File {repository_name: $repo})
-                RETURN f.language AS lang, count(f) AS c
-                ORDER BY c DESC LIMIT 10
-            """, repo=self.repo_name).data()
+        repo = self.repo_name
+        c = self.conn
+        file_count = scalar(c.execute(
+            "MATCH (f:File {repository_name: $repo}) RETURN count(f)", {"repo": repo}))
+        dir_count = scalar(c.execute(
+            "MATCH (d:Directory {repository_name: $repo}) RETURN count(d)", {"repo": repo}))
+        contains = scalar(c.execute(
+            "MATCH (a:Directory {repository_name: $repo})-[r:CONTAINS]->() RETURN count(r)",
+            {"repo": repo}))
+        same_dir = scalar(c.execute(
+            "MATCH (a:File {repository_name: $repo})-[r:SAME_DIR]->() RETURN count(r)",
+            {"repo": repo}))
+        depends = scalar(c.execute(
+            "MATCH (a:File {repository_name: $repo})-[r:DEPENDS_ON]->() RETURN count(r)",
+            {"repo": repo}))
+        lang_rows = rows_to_dicts(c.execute("""
+            MATCH (f:File {repository_name: $repo})
+            RETURN f.language, count(f) AS c
+            ORDER BY c DESC LIMIT 10
+        """, {"repo": repo}))
 
         print("  ┌─ Graph Summary ──────────────────────────────┐")
         print(f"  │  File nodes      : {file_count:<6}                    │")
         print(f"  │  Directory nodes : {dir_count:<6}                    │")
-        print(f"  │  Total edges     : {edge_count:<6}                    │")
+        print(f"  │  CONTAINS edges  : {contains:<6}                    │")
+        print(f"  │  SAME_DIR edges  : {same_dir:<6}                    │")
+        print(f"  │  DEPENDS_ON edges: {depends:<6}                    │")
         print(f"  │                                              │")
         print(f"  │  Files by language:                          │")
-        for row in lang_rows:
-            bar = "█" * min(row["c"] // 10 + 1, 20)
-            print(f"  │    {row['lang']:<22} {bar:<20} {row['c']} │")
+        for lang, count in lang_rows:
+            bar = "█" * min(count // 10 + 1, 20)
+            print(f"  │    {str(lang):<22} {bar:<20} {count} │")
         print("  └──────────────────────────────────────────────┘\n")
-        print("  Neo4j browser → https://console.neo4j.io")
-        print("  Run: MATCH (n) RETURN n\n")
 
 
 # ── Reference queries ─────────────────────────────────────────────────────────
 
 REFERENCE_QUERIES = """
 ──────────────────────────────────────────────────────────
-  Useful Cypher queries for your graph:
-
-  // Full repo tree
-  MATCH (n) RETURN n
+  Useful Cypher queries (run via kuzu.Connection.execute):
 
   // All files inside a specific directory
   MATCH (d:Directory {name: "src"})-[:CONTAINS]->(f:File)
   RETURN f.name, f.language
 
-  // All C# files
-  MATCH (f:File {language: "C#"})
+  // All C# files in a repo
+  MATCH (f:File {language: "C#", repository_name: "nopCommerce"})
   RETURN f.relative ORDER BY f.relative
 
-  // Directory tree only
-  MATCH p=(root:Directory {relative: ""})-[:CONTAINS*]->(d:Directory)
-  RETURN p
+  // Direct dependencies of a file
+  MATCH (f:File {relative: "app.py"})-[:DEPENDS_ON]->(d:File)
+  RETURN d.relative
+
+  // Transitive dependencies (variable-length path)
+  MATCH (f:File {relative: "app.py"})-[:DEPENDS_ON*1..3]->(d:File)
+  RETURN DISTINCT d.relative
 
   // Files grouped by language
-  MATCH (f:File)
-  RETURN f.language, count(f) AS total
-  ORDER BY total DESC
+  MATCH (f:File) RETURN f.language, count(f) AS total ORDER BY total DESC
 
-  // Files that share a directory with a given file
-  MATCH (f:File {name: "app.py"})-[:SAME_DIR]-(neighbour:File)
-  RETURN neighbour.name, neighbour.language
+  // Files that share a directory
+  MATCH (f:File {name: "app.py"})-[:SAME_DIR]-(n:File)
+  RETURN n.name, n.language
 ──────────────────────────────────────────────────────────
 """
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Groundwork — ingest tree_to_json.py output into Neo4j"
+        description="Groundwork — ingest tree_to_json.py output into Kùzu"
     )
     parser.add_argument("json_file", help="Path to JSON file list from tree_to_json.py")
     parser.add_argument("--repo", required=True, help="Repository name (scopes all nodes)")
-    parser.add_argument("--clear",   action="store_true",
+    parser.add_argument("--clear", action="store_true",
                         help="Clear THIS repo's nodes before ingesting")
+    parser.add_argument("--db", default=None,
+                        help=f"Kùzu database path (default: {KUZU_DB_PATH})")
     args = parser.parse_args()
 
     json_path = Path(args.json_file)
@@ -289,16 +274,15 @@ def main():
     with open(json_path) as f:
         all_files = json.load(f)
 
-    # ── Filter to code files only ─────────────────────────────────────────────
     files = [f for f in all_files if f.get("language") in CODE_LANGUAGES]
     skipped = len(all_files) - len(files)
     print(f"\n  Loaded {len(all_files)} files from {json_path}")
     print(f"  Keeping {len(files)} code files, skipping {skipped} non-code files")
-    print(f"  Languages: {', '.join(sorted({f['language'] for f in files}))}")
+    if files:
+        print(f"  Languages: {', '.join(sorted({f['language'] for f in files}))}")
 
-    ingester = GraphIngester(NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD, args.repo)
+    ingester = GraphIngester(args.repo, args.db)
     try:
-        ingester.create_constraints()
         if args.clear:
             ingester.clear_graph()
         ingester.ingest(files)

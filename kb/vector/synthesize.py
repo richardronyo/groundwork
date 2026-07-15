@@ -11,8 +11,11 @@ Usage:
 
 import sys
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from kb.vector.extract_business_rules import get_client, synthesize_repo_function
+from kb.vector.extract_business_rules import (
+    get_client, synthesize_repo_function, MAX_KEY_POINTS,
+)
 from kb.relationaldb.initialize_db import (
     get_connection, load_business_rules_from_db,
     save_key_points, list_repositories,
@@ -38,6 +41,10 @@ def resolve_repo(conn, requested):
 def main():
     parser = argparse.ArgumentParser(description="Synthesize key points from DB rules")
     parser.add_argument("--repo", help="Repository name as stored in the DB")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of parallel workers (default: 1, synthesis is typically sequential)")
+    parser.add_argument("--max-key-points", type=int, default=MAX_KEY_POINTS,
+                        help=f"Maximum key points to generate (default: {MAX_KEY_POINTS})")
     args = parser.parse_args()
 
     conn = get_connection()
@@ -50,7 +57,8 @@ def main():
 
         print(f"Loaded rules for {len(business_rules)} files.")
         client = get_client()
-        repo_function = synthesize_repo_function(business_rules, client)
+        repo_function = synthesize_repo_function(
+            business_rules, client, max_points=args.max_key_points)
 
         save_key_points(conn, repo_name, repo_function)
         conn.commit()

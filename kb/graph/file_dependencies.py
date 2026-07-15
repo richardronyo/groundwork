@@ -2,14 +2,14 @@
 Groundwork — Dependency Edge Builder
 Reads the first N lines of each code file, extracts import statements,
 resolves them against known files in the repo, and creates DEPENDS_ON
-edges in Neo4j.
+edges in the embedded Kùzu graph.
 
 Usage:
     python3 build_dependencies.py <files.json> --repo <path/to/repo>
     python3 build_dependencies.py flask_files.json --repo ./flask --lines 30
 
 Requirements:
-    pip install neo4j python-dotenv
+    pip install kuzu python-dotenv
 """
 
 import json
@@ -18,15 +18,13 @@ import re
 import sys
 import argparse
 from pathlib import Path
-from neo4j import GraphDatabase
 from dotenv import load_dotenv
 
-# ── Neo4j connection ──────────────────────────────────────────────────────────
-load_dotenv()
+from kb.graph.kuzu_store import (
+    get_connection, uid_for, batched, scalar, KUZU_DB_PATH,
+)
 
-NEO4J_URI      = os.getenv("NEO4J_URI")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+load_dotenv()
 
 # ── Import extractors per language ────────────────────────────────────────────
 # Each returns a list of raw import strings from a block of lines
@@ -265,26 +263,51 @@ def extract_dependencies(
     return edges
 
 
-def push_edges(edges: list[tuple[str, str]], driver, repo_name: str):
-    """Creates DEPENDS_ON edges in Neo4j for all resolved pairs, scoped to one repo.
-    Matches nodes by uid = "<repo>::<relative>" so edges never cross repos."""
-    print(f"\n  Creating {len(edges)} DEPENDS_ON edges for repo '{repo_name}'...")
+def push_edges(edges: list[tuple[str, str]], conn, repo_name: str):
+    """
+    Creates DEPENDS_ON edges in Kùzu, scoped to one repo via
+    uid = "<repo>::<relative>" so edges never cross repositories.
 
-    def _create_edge(tx, source, target):
-        tx.run("""
-            MATCH (a:File {uid: $source_uid})
-            MATCH (b:File {uid: $target_uid})
+    Writes in UNWIND batches rather than one query per edge — the per-edge
+    approach cost one round-trip each, which dominated ingestion time.
+    """
+    total = len(edges)
+    print(f"\n  Creating {total} DEPENDS_ON edges for repo '{repo_name}'...")
+
+    rows = [{"s": uid_for(repo_name, s), "t": uid_for(repo_name, t)}
+            for s, t in edges]
+
+    done = 0
+    for chunk in batched(rows):
+        conn.execute("""
+            UNWIND $rows AS row
+            MATCH (a:File {uid: row.s}), (b:File {uid: row.t})
             MERGE (a)-[:DEPENDS_ON]->(b)
-        """, source_uid=f"{repo_name}::{source}", target_uid=f"{repo_name}::{target}")
+        """, {"rows": chunk})
+        done += len(chunk)
+        pct = int(done / total * 40)
+        bar = "█" * pct + "░" * (40 - pct)
+        print(f"\r  [{bar}] {done}/{total}", end="", flush=True)
 
-    with driver.session() as session:
-        for i, (source, target) in enumerate(edges):
-            session.execute_write(_create_edge, source, target)
-            pct = int((i + 1) / len(edges) * 40)
-            bar = "█" * pct + "░" * (40 - pct)
-            print(f"\r  [{bar}] {i+1}/{len(edges)}", end="", flush=True)
+    stored = scalar(conn.execute(
+        "MATCH (a:File {repository_name: $repo})-[r:DEPENDS_ON]->() RETURN count(r)",
+        {"repo": repo_name}))
+    print(f"\n  Done — {stored} DEPENDS_ON edges now in the graph.")
 
-    print("\n  Done.\n")
+    if stored == 0 and total > 0:
+        # MATCH ... MERGE silently does nothing when the nodes aren't found, so
+        # surface it rather than reporting a successful no-op.
+        n_nodes = scalar(conn.execute(
+            "MATCH (f:File {repository_name: $repo}) RETURN count(f)", {"repo": repo_name}))
+        print(f"\n  ⚠ Resolved {total} dependencies but stored 0 edges.")
+        if n_nodes == 0:
+            print(f"    No File nodes exist for repo '{repo_name}'.")
+            print(f"    Run the scan stage first, and make sure its --repo matches:")
+            print(f"      python3 -m kb.graph.json_to_graph <tree.json> --repo {repo_name}")
+        else:
+            print(f"    {n_nodes} nodes exist for '{repo_name}' but no edges matched —"
+                  f" check that the file paths agree.")
+    print()
 
 
 def print_summary(edges: list[tuple[str, str]]):
@@ -309,7 +332,12 @@ def main():
     )
     parser.add_argument("json_file", help="Path to JSON file list from tree_to_json.py")
     parser.add_argument("--repo",    required=True, help="Path to the repository root on disk")
+    parser.add_argument("--repo-name", default=None,
+                        help="Repository NAME as stored in the graph "
+                             "(default: basename of --repo). Must match json_to_graph's --repo.")
     parser.add_argument("--lines",   type=int, default=20, help="Lines to read per file (default: 20)")
+    parser.add_argument("--db",      default=None,
+                        help=f"Kùzu database path (default: {KUZU_DB_PATH})")
     args = parser.parse_args()
 
     json_path = Path(args.json_file)
@@ -343,12 +371,9 @@ def main():
     if not edges:
         sys.exit(0)
 
-    repo_name = Path(args.repo).name
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
-    try:
-        push_edges(edges, driver, repo_name)
-    finally:
-        driver.close()
+    repo_name = args.repo_name or Path(args.repo).name
+    conn = get_connection(args.db)
+    push_edges(edges, conn, repo_name)
 
     print("  Cypher to view dependencies:")
     print("  MATCH (a:File)-[:DEPENDS_ON]->(b:File) RETURN a.name, b.name\n")

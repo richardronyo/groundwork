@@ -14,6 +14,7 @@
 #   ./ingestion_pipeline.sh /path/to/repo --from rules
 #   ./ingestion_pipeline.sh /path/to/repo --only embed
 #   ./ingestion_pipeline.sh /path/to/repo --from rules --resume-rules
+#   ./ingestion_pipeline.sh /path/to/repo --workers 10 --embed-workers 8
 # =============================================================================
 
 set -euo pipefail
@@ -32,12 +33,24 @@ EMBEDDINGS_MOD="kb.vector.embeddings"
 
 STAGES=(init scan deps rules synth embed)
 
+# Default parallelization settings
+WORKERS=5
+EMBED_WORKERS=4
+RATE_LIMIT=60
+
 stage_index() {
     local target="$1"
     for i in "${!STAGES[@]}"; do
         [[ "${STAGES[$i]}" == "$target" ]] && { echo "$i"; return; }
     done
     echo "-1"
+}
+
+should_run() {
+    local stage="$1"
+    local idx
+    idx=$(stage_index "$stage")
+    [[ "$idx" -ge "$START_IDX" && "$idx" -le "$END_IDX" ]]
 }
 
 print_header() { echo ""; echo -e "${BLUE}═══ GROUNDWORK — Ingestion Pipeline ═══${NC}"; echo ""; }
@@ -62,6 +75,9 @@ while [[ $# -gt 0 ]]; do
         --from)  FROM_STAGE="$2"; shift 2 ;;
         --only)  ONLY_STAGE="$2"; shift 2 ;;
         --resume-rules) RESUME_RULES="--only-unprocessed"; shift ;;
+        --workers) WORKERS="$2"; shift 2 ;;
+        --embed-workers) EMBED_WORKERS="$2"; shift 2 ;;
+        --rate-limit) RATE_LIMIT="$2"; shift 2 ;;
         *)       REPO_PATH="${1%/}"; shift ;;
     esac
 done
@@ -76,7 +92,7 @@ print_info "Checking dependencies..."
 check_dependency tree
 check_dependency python3
 check_python_module psycopg "psycopg[binary]"
-check_python_module neo4j neo4j
+check_python_module kuzu kuzu
 check_python_module chromadb chromadb
 check_python_module openai openai
 check_python_module bert_score bert-score
@@ -112,6 +128,8 @@ REPO_NAME="$(basename "$REPO_PATH")"
 
 print_info "Repository : $REPO_PATH"
 print_info "Repo name  : $REPO_NAME"
+print_info "Workers    : $WORKERS (extraction) / $EMBED_WORKERS (embedding)"
+print_info "Rate limit : $RATE_LIMIT API calls/minute"
 
 # ── Determine which stages to run ─────────────────────────────────────────────
 if [[ -n "$ONLY_STAGE" ]]; then
@@ -125,11 +143,6 @@ else
     [[ "$START_IDX" == "-1" ]] && print_error "Unknown stage: $FROM_STAGE"
     print_info "Running stages: ${STAGES[$START_IDX]} → ${STAGES[$END_IDX]}"
 fi
-
-should_run() {
-    local idx; idx=$(stage_index "$1")
-    [[ "$idx" -ge "$START_IDX" && "$idx" -le "$END_IDX" ]]
-}
 
 echo ""
 printf "  Proceed? [Y/n]: "
@@ -161,8 +174,8 @@ fi
 if should_run scan; then
     print_step "scan — file structure + metrics"
     generate_tree
-    print_info "Populating Neo4j file nodes..."
-    python3 -m "$JSON_TO_GRAPH_MOD" "$TEMP_JSON" --repo "$REPO_NAME" --clear || print_error "Neo4j node ingest failed"
+    print_info "Populating Kùzu file nodes..."
+    python3 -m "$JSON_TO_GRAPH_MOD" "$TEMP_JSON" --repo "$REPO_NAME" --clear || print_error "Kùzu node ingest failed"
     print_info "Saving file metrics to PostgreSQL..."
     python3 -m "$METADATA_MOD" "$REPO_PATH" || print_error "Metrics ingest failed"
     print_success "Scan complete"
@@ -172,7 +185,8 @@ fi
 if should_run deps; then
     print_step "deps — dependency edges"
     generate_tree
-    python3 -m "$FILE_DEPS_MOD" "$TEMP_JSON" --repo "$REPO_PATH" || print_error "Dependency edges failed"
+    python3 -m "$FILE_DEPS_MOD" "$TEMP_JSON" --repo "$REPO_PATH" --repo-name "$REPO_NAME" \
+        || print_error "Dependency edges failed"
     print_success "Dependencies built"
 fi
 
@@ -180,7 +194,8 @@ fi
 if should_run rules; then
     print_step "rules — business rules (OpenAI → PostgreSQL)"
     python3 -m "$EXTRACT_RULES_MOD" --repo "$REPO_NAME" --repo-path "$REPO_PATH" \
-        --no-synthesize $RESUME_RULES || print_error "Rule extraction failed"
+        --no-synthesize $RESUME_RULES --workers "$WORKERS" --rate-limit "$RATE_LIMIT" \
+        || print_error "Rule extraction failed"
     print_success "Business rules extracted"
 fi
 
@@ -194,7 +209,8 @@ fi
 # ── Stage 6: embed ────────────────────────────────────────────────────────────
 if should_run embed; then
     print_step "embed — BERTScore vectors → ChromaDB"
-    python3 -m "$EMBEDDINGS_MOD" --repo "$REPO_NAME" || print_error "Embedding failed"
+    python3 -m "$EMBEDDINGS_MOD" --repo "$REPO_NAME" --workers "$EMBED_WORKERS" \
+        || print_error "Embedding failed"
     print_success "Vector store built"
 fi
 
@@ -202,7 +218,7 @@ echo ""
 echo -e "${GREEN}═══ ✓ PIPELINE COMPLETE ═══${NC}"
 echo ""
 echo -e "${BLUE}  PostgreSQL:${NC} repo_analysis (files, business_rules, key_points)"
-echo -e "${BLUE}  Neo4j:${NC} File nodes + CONTAINS + DEPENDS_ON"
+echo -e "${BLUE}  Kùzu:${NC} ./kuzu_db — File nodes + CONTAINS + SAME_DIR + DEPENDS_ON"
 echo -e "${BLUE}  ChromaDB:${NC} groundwork_${REPO_NAME} collection"
 echo ""
 echo -e "${BLUE}  Query it:${NC}"

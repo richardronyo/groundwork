@@ -168,7 +168,7 @@ def get_business_rules(file_paths: List[str], repo_name: str = None) -> Dict[str
                 FROM files f
                 JOIN business_rules br ON br.file_id = f.id
                 WHERE f.file_path = ANY(%s)
-                  AND (%s IS NULL OR f.repository_name = %s)
+                AND (%s::text IS NULL OR f.repository_name = %s) 
                 GROUP BY f.file_path
             """, (file_paths, repo_name, repo_name))
             return {row[0]: (row[1] or []) for row in cur.fetchall()}

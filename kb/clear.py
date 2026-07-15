@@ -4,7 +4,7 @@ Groundwork — Knowledge Base Teardown
 
 Clears the knowledge base across all three stores:
   - PostgreSQL  (files, business_rules, key_points)
-  - Neo4j       (File / Directory nodes + their edges)
+  - Kùzu        (File / Directory nodes + their edges, embedded)
   - ChromaDB    (per-repo vector collections)
 
 Modes:
@@ -16,10 +16,10 @@ Usage:
     python3 -m kb.clear --repo flask       # wipe only the 'flask' repo
     python3 -m kb.clear --yes              # skip the confirmation prompt
     python3 -m kb.clear --list             # list repos, then exit
-    python3 -m kb.clear --postgres-only    # limit to one store (also --neo4j-only, --chroma-only)
+    python3 -m kb.clear --postgres-only    # limit to one store (also --kuzu-only, --chroma-only)
 
 Requirements:
-    pip install psycopg neo4j chromadb python-dotenv
+    pip install psycopg kuzu chromadb python-dotenv
 """
 
 import os
@@ -38,10 +38,6 @@ from kb.relationaldb.initialize_db import (
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-
-NEO4J_URI      = os.getenv("NEO4J_URI")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 CHROMA_DB_PATH    = "./chroma_db"
 CHROMA_COLLECTION = "groundwork"
@@ -70,47 +66,32 @@ def clear_postgres(repo_name=None):
         conn.close()
 
 
-# ── Neo4j ─────────────────────────────────────────────────────────────────────
+# ── Kùzu (graph) ──────────────────────────────────────────────────────────────
 
-def clear_neo4j(repo_name=None):
+def clear_kuzu(repo_name=None):
     try:
-        from neo4j import GraphDatabase
+        from kb.graph.kuzu_store import (
+            get_connection as kuzu_conn, clear_repo as kz_clear_repo,
+            clear_all as kz_clear_all, KUZU_DB_PATH,
+        )
     except ImportError:
-        print("  Neo4j: neo4j driver not installed — skipping.")
+        print("  Kùzu: kuzu not installed — skipping.")
         return
 
-    if not NEO4J_URI:
-        print("  Neo4j: NEO4J_URI not set — skipping.")
+    if not Path(KUZU_DB_PATH).exists():
+        print(f"  Kùzu: no {KUZU_DB_PATH} directory — nothing to clear.")
         return
 
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
     try:
-        with driver.session() as session:
-            if repo_name:
-                # Count then delete only this repo's nodes
-                count = session.run(
-                    "MATCH (n {repository_name: $repo}) RETURN count(n) AS c",
-                    repo=repo_name,
-                ).single()["c"]
-                session.run(
-                    "MATCH (n:File {repository_name: $repo}) DETACH DELETE n",
-                    repo=repo_name,
-                )
-                session.run(
-                    "MATCH (n:Directory {repository_name: $repo}) DETACH DELETE n",
-                    repo=repo_name,
-                )
-                print(f"  Neo4j: removed {count} nodes for repo '{repo_name}'")
-            else:
-                # Wipe all File/Directory nodes (leaves unrelated graphs intact)
-                count = session.run(
-                    "MATCH (n) WHERE n:File OR n:Directory RETURN count(n) AS c"
-                ).single()["c"]
-                session.run("MATCH (n:File) DETACH DELETE n")
-                session.run("MATCH (n:Directory) DETACH DELETE n")
-                print(f"  Neo4j: removed {count} File/Directory nodes (all repos)")
-    finally:
-        driver.close()
+        conn = kuzu_conn()
+        if repo_name:
+            n = kz_clear_repo(conn, repo_name)
+            print(f"  Kùzu: removed {n} nodes for repo '{repo_name}'")
+        else:
+            n = kz_clear_all(conn)
+            print(f"  Kùzu: removed {n} File/Directory nodes (all repos)")
+    except Exception as e:
+        print(f"  Kùzu: skipped ({e})")
 
 
 # ── ChromaDB ──────────────────────────────────────────────────────────────────
@@ -168,7 +149,7 @@ def confirm(prompt: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Clear the Groundwork knowledge base (PostgreSQL + Neo4j + ChromaDB)"
+        description="Clear the Groundwork knowledge base (PostgreSQL + Kùzu + ChromaDB)"
     )
     parser.add_argument("--repo", default=None,
                         help="Clear only this repository (default: clear everything)")
@@ -177,7 +158,7 @@ def main():
     parser.add_argument("--list", action="store_true",
                         help="List repositories, then exit")
     parser.add_argument("--postgres-only", action="store_true")
-    parser.add_argument("--neo4j-only", action="store_true")
+    parser.add_argument("--kuzu-only", action="store_true")
     parser.add_argument("--chroma-only", action="store_true")
     args = parser.parse_args()
 
@@ -198,14 +179,14 @@ def main():
         return
 
     # Which stores?
-    only_flags = [args.postgres_only, args.neo4j_only, args.chroma_only]
+    only_flags = [args.postgres_only, args.kuzu_only, args.chroma_only]
     do_all_stores = not any(only_flags)
     do_pg     = do_all_stores or args.postgres_only
-    do_neo    = do_all_stores or args.neo4j_only
+    do_kuzu   = do_all_stores or args.kuzu_only
     do_chroma = do_all_stores or args.chroma_only
 
     stores = [n for n, on in
-              [("PostgreSQL", do_pg), ("Neo4j", do_neo), ("ChromaDB", do_chroma)] if on]
+              [("PostgreSQL", do_pg), ("Kùzu", do_kuzu), ("ChromaDB", do_chroma)] if on]
 
     scope = f"repository '{args.repo}'" if args.repo else "ALL repositories"
 
@@ -220,8 +201,8 @@ def main():
     print()
     if do_pg:
         clear_postgres(args.repo)
-    if do_neo:
-        clear_neo4j(args.repo)
+    if do_kuzu:
+        clear_kuzu(args.repo)
     if do_chroma:
         clear_chroma(args.repo)
 
