@@ -152,51 +152,95 @@ EXTRACTORS = {
 
 # ── Import resolver ───────────────────────────────────────────────────────────
 
+# An import in one language must never resolve to a file in an unrelated one.
+# Without this, a C# `using Nop.Core.Domain.Catalog;` stem-matches "catalog" and
+# resolves to a JavaScript catalog.js — a false edge. Languages that genuinely
+# share a module space sit in the same group.
+LANGUAGE_GROUPS = {
+    "Python":             "python",
+    "JavaScript":         "web",
+    "TypeScript":         "web",
+    "JavaScript (React)": "web",
+    "TypeScript (React)": "web",
+    "C#":                 "dotnet",
+    "Razor":              "dotnet",
+    "Java":               "jvm",
+    "Kotlin":             "jvm",
+    "C":                  "cfamily",
+    "C++":                "cfamily",
+    "C/C++ Header":       "cfamily",
+    "Go":                 "go",
+    "Rust":               "rust",
+    "Ruby":               "ruby",
+    "PHP":                "php",
+    "Swift":              "swift",
+    "Shell":              "shell",
+    "Batch":              "shell",
+    "SQL":                "sql",
+}
+
+
+def group_of(language: str) -> str:
+    return LANGUAGE_GROUPS.get(language, "other")
+
+
 def build_lookup(files: list[dict]) -> dict:
     """
-    Builds two lookup indexes from the file list:
+    Builds lookup indexes PER LANGUAGE GROUP:
       - by relative path  (exact match)
       - by stem           (filename without extension, for fuzzy matching)
-    Returns a dict: { key -> relative_path }
+      - by dot-notation   (e.g. "flask.helpers" → "flask/helpers.py")
+
+    Returns { group: { key -> relative_path } }. Keeping the indexes separate is
+    what prevents cross-language false positives.
     """
-    lookup = {}
+    lookup: dict = {}
     for f in files:
         rel = f["relative"]
-        # exact relative path
-        lookup[rel] = rel
-        # stem only e.g. "helpers" → "flask/helpers.py"
+        grp = group_of(f.get("language", ""))
+        idx = lookup.setdefault(grp, {})
+
+        idx[rel] = rel                                   # exact relative path
         stem = Path(rel).stem.lower()
-        if stem not in lookup:
-            lookup[stem] = rel
-        # dot-notation key e.g. "flask.helpers" → "flask/helpers.py"
+        if stem not in idx:
+            idx[stem] = rel
         dot_key = rel.replace("/", ".").rsplit(".", 1)[0].lower()
-        if dot_key not in lookup:
-            lookup[dot_key] = rel
+        if dot_key not in idx:
+            idx[dot_key] = rel
 
     return lookup
 
 
-def resolve(raw_import: str, source_file: str, lookup: dict, repo_root: Path) -> str | None:
+def resolve(raw_import: str, source_file: str, lookup: dict, repo_root: Path,
+            source_language: str = None) -> str | None:
     """
-    Tries to resolve a raw import string to a known relative file path.
-    Returns the relative path if found, else None.
+    Resolves a raw import string to a known relative file path, searching ONLY
+    within the source file's own language group so imports can't leak across
+    languages (a C# `using ...Catalog` must not match catalog.js).
     """
     raw = raw_import.strip()
+    lookup = lookup.get(group_of(source_language or ""), {})
 
     # ── 1. Relative path imports (JS/Ruby/Shell: ./foo, ../bar) ──────────────
     if raw.startswith("."):
-        source_dir = Path(source_file).parent
+        # Resolve against the SOURCE FILE's directory inside the repo — not the
+        # process CWD. Anchoring on the repo root is what makes "./foo" work.
+        root = repo_root.resolve()
+        source_dir = (root / source_file).parent
         candidate = (source_dir / raw).resolve()
-        # Try with common extensions
-        for ext in ("", ".py", ".js", ".ts", ".cs", ".java", ".go", ".rb", ".rs", ".h", ".sh"):
+        for ext in ("", ".py", ".js", ".jsx", ".ts", ".tsx", ".cs", ".java",
+                    ".go", ".rb", ".rs", ".h", ".sh"):
             full = Path(str(candidate) + ext)
-            # Convert back to relative
             try:
-                rel = str(full.relative_to(repo_root.resolve()))
-                if rel in lookup:
-                    return lookup[rel]
+                rel = str(full.relative_to(root))
             except ValueError:
-                pass
+                continue          # escaped the repo — not our file
+            if rel in lookup:
+                return lookup[rel]
+            # index.js style: ./utils → utils/index.js
+            idx_rel = str(Path(rel) / f"index{ext}") if ext else None
+            if idx_rel and idx_rel in lookup:
+                return lookup[idx_rel]
         return None
 
     # ── 2. Exact relative path in lookup ─────────────────────────────────────
@@ -253,7 +297,7 @@ def extract_dependencies(
         raw_imports = extractor(lines)
 
         for raw in raw_imports:
-            target = resolve(raw, rel, lookup, repo_root)
+            target = resolve(raw, rel, lookup, repo_root, language)
             if target and target != rel:
                 key = (rel, target)
                 if key not in seen:

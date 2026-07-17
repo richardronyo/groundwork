@@ -18,3 +18,4 @@ __pycache__/*
 kb/*/__pycache__/*
 kb/__pycache__/*
 kuzu_db/*
+diagrams/*
