@@ -6,12 +6,16 @@ Generates unit tests for a target file (or a single function within it) by
 combining two sources of grounding:
   1. The actual source code (read from disk)
   2. The business rules for that file (from PostgreSQL)
-  3. Its dependencies (from Neo4j) — so the LLM knows the collaborators
+  3. Its dependencies (from Kùzu) — so the LLM knows the collaborators
 
 The test framework is inferred from the file's language (pytest for Python,
 Jest for JS/TS, JUnit for Java, xUnit for C#, etc.).
 
 Run from the PROJECT ROOT (the directory containing kb/).
+
+Output:
+    generated_tests/   the test files
+    weakness/          the weakness reports, as PDF
 
 Usage:
     python3 -m kb.generate_tests --repo flask --file src/app.py
@@ -20,7 +24,7 @@ Usage:
     python3 -m kb.generate_tests --repo flask --file src/app.py --print
 
 Requirements:
-    pip install openai psycopg neo4j python-dotenv
+    pip install openai psycopg kuzu python-dotenv
 """
 
 import os
@@ -36,6 +40,7 @@ from kb.relationaldb.initialize_db import (
     get_connection, list_repositories,
     load_business_rules_from_db,
 )
+from weakness_helper import markdown_to_pdf, timestamp
 
 # Reuse the same retrieval helpers grab_context uses, so test generation and
 # querying draw on one shared context layer.
@@ -50,10 +55,6 @@ load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 MODEL          = "gpt-5-mini"
-
-NEO4J_URI      = os.getenv("NEO4J_URI")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
 
 # ── Framework inference ───────────────────────────────────────────────────────
@@ -361,7 +362,7 @@ IMPORT_PATTERNS = {
 def find_imported_functions(source, rel_file, repo_name):
     """
     Parses the target file's imports and resolves them against the repo's
-    dependency files (from Neo4j) to find imported FUNCTIONS worth testing.
+    dependency files (from Kùzu) to find imported FUNCTIONS worth testing.
 
     Returns a list of (dep_file, function_name) pairs. Only functions imported
     from files that are actually in this repo's knowledge base are returned.
@@ -371,7 +372,7 @@ def find_imported_functions(source, rel_file, repo_name):
     if not patterns:
         return []
 
-    # Dependency files this file imports from (repo-scoped, from Neo4j)
+    # Dependency files this file imports from (repo-scoped, from Kùzu)
     deps_map = kb_get_dependencies([rel_file], repo_name)
     dep_files = deps_map.get(rel_file, [])
     # Index dep files by module stem for resolution: "helpers" -> "flask/helpers.py"
@@ -423,7 +424,8 @@ def resolve_repo(conn, requested):
 
 def generate_for_target(client, repo_name, repo_path, rel_file, rules_by_file,
                         function=None, related=3, analyze=True,
-                        to_stdout=False, out_dir="generated_tests"):
+                        to_stdout=False, out_dir="generated_tests",
+                        reports_dir="weakness", report_format="pdf"):
     """
     Generates tests (and optionally a weaknesses report) for one target —
     either a whole file or a single function within it. Reusable so the same
@@ -485,9 +487,36 @@ def generate_for_target(client, repo_name, repo_path, rel_file, rules_by_file,
     (out / out_name).write_text(test_code, encoding="utf-8")
     print(f"     ✓ Wrote tests  → {out / out_name}")
     if report:
-        report_name = Path(out_name).stem + "_weaknesses.md"
-        (out / report_name).write_text(report, encoding="utf-8")
-        print(f"     ✓ Wrote report → {out / report_name}")
+        # Weakness reports live in their own folder, separate from the test files,
+        # so a test runner pointed at out_dir never tries to collect them.
+        rdir = Path(reports_dir)
+        rdir.mkdir(parents=True, exist_ok=True)
+        stem = Path(out_name).stem + "_weaknesses"
+
+        if report_format in ("md", "both"):
+            md_path = rdir / f"{stem}.md"
+            md_path.write_text(report, encoding="utf-8")
+            print(f"     ✓ Wrote report → {md_path}")
+
+        if report_format in ("pdf", "both"):
+            pdf_path = rdir / f"{stem}.pdf"
+            try:
+                markdown_to_pdf(
+                    report, pdf_path,
+                    title=f"Weaknesses Report",
+                    subtitle=f"{target_desc}  ·  {repo_name}  ·  {timestamp()}",
+                )
+                print(f"     ✓ Wrote report → {pdf_path}")
+            except Exception as e:
+                # Never lose the analysis because rendering failed — but say
+                # clearly WHY, so a missing dependency isn't mistaken for
+                # "it still writes markdown".
+                print(f"     ! PDF rendering failed: {type(e).__name__}: {e}")
+                print(f"       (check: pip install reportlab, and that "
+                      f"kb/report_pdf.py exists)")
+                fallback = rdir / f"{stem}.md"
+                fallback.write_text(report, encoding="utf-8")
+                print(f"     ✓ Wrote markdown fallback → {fallback}")
 
 
 def main():
@@ -512,6 +541,11 @@ def main():
                         help="Min retrieval score when using --prompt (default: 0.3)")
     parser.add_argument("--no-analyze", action="store_true",
                         help="Skip the weaknesses report (generate tests only)")
+    parser.add_argument("--reports-dir", default="weakness",
+                        help="Folder for weakness reports (default: weakness)")
+    parser.add_argument("--report-format", default="pdf",
+                        choices=["pdf", "md", "both"],
+                        help="Weakness report format (default: pdf)")
     args = parser.parse_args()
 
     if not args.file and not args.prompt:
@@ -550,6 +584,7 @@ def main():
         client, repo_name, repo_path, rel_file, rules_by_file,
         function=args.function, related=args.related,
         analyze=not args.no_analyze, to_stdout=args.to_stdout, out_dir=args.out,
+        reports_dir=args.reports_dir, report_format=args.report_format,
     )
 
     # 2. Optionally follow imports: test functions imported from repo dependencies
@@ -564,6 +599,7 @@ def main():
                         client, repo_name, repo_path, dep_file, rules_by_file,
                         function=func_name, related=args.related,
                         analyze=not args.no_analyze, to_stdout=args.to_stdout, out_dir=args.out,
+                        reports_dir=args.reports_dir, report_format=args.report_format,
                     )
                 except SystemExit as e:
                     print(f"     (skipped {func_name} in {dep_file}: {e})")

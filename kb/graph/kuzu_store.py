@@ -42,8 +42,18 @@ def uid_for(repo_name: str, relative: str) -> str:
     return f"{repo_name}::{relative}"
 
 
-def get_connection(db_path: str = None):
-    """Opens (creating if needed) the Kùzu database and ensures the schema."""
+def get_connection(db_path: str = None, read_only: bool = False):
+    """
+    Opens the Kùzu database.
+
+    Kùzu allows EITHER one read-write connection OR several read-only ones. A
+    read-write handle blocks everything else, which is why an open notebook
+    kernel makes the CLI tools fail with "Could not set lock on file".
+
+    Tools that only read (diagrams, reports, queries, the inspector) should pass
+    read_only=True so they can run alongside each other and alongside an open
+    notebook. Only ingestion needs read-write.
+    """
     try:
         import kuzu
     except ImportError:
@@ -51,6 +61,11 @@ def get_connection(db_path: str = None):
 
     path = db_path or KUZU_DB_PATH
     p = Path(path)
+
+    if read_only and not p.exists():
+        raise RuntimeError(
+            f"No Kùzu database at {path}. Run the scan stage first:\n"
+            f"  ./ingestion_pipeline.sh <repo> --only scan")
 
     # Kùzu stores the whole database in a SINGLE FILE, not a directory. If an
     # empty directory is sitting at the path (e.g. created by a stray mkdir),
@@ -65,12 +80,30 @@ def get_connection(db_path: str = None):
         p.rmdir()
 
     p.parent.mkdir(parents=True, exist_ok=True)
-    db = kuzu.Database(str(p))
+    try:
+        db = kuzu.Database(str(p), read_only=read_only)
+    except RuntimeError as e:
+        if "lock" in str(e).lower():
+            raise RuntimeError(
+                f"Kùzu database at {path} is locked by another process.\n"
+                f"  Kùzu allows one read-write connection at a time.\n"
+                f"  • Close any open Jupyter kernel using the graph "
+                f"(Kernel → Restart), or\n"
+                f"  • stop any other Groundwork command still running, or\n"
+                f"  • re-run this tool read-only if it only needs to read."
+            ) from None
+        raise
     conn = kuzu.Connection(db)
-    ensure_schema(conn)
+    if not read_only:
+        ensure_schema(conn)        # schema changes need write access
     # Keep a reference to the Database so it isn't garbage collected
     conn._db = db
     return conn
+
+
+def get_reader(db_path: str = None):
+    """Read-only connection — safe to open alongside other readers."""
+    return get_connection(db_path, read_only=True)
 
 
 def ensure_schema(conn):
@@ -177,3 +210,139 @@ def get_dependencies(conn, file_paths: list, repo_name: str) -> dict:
     for src, dep in rows_to_dicts(res):
         out.setdefault(src, []).append(dep)
     return out
+
+# ── Inspection ────────────────────────────────────────────────────────────────
+
+def summarize(conn, repo_name: str = None) -> dict:
+    """Counts of everything in the graph, optionally scoped to one repository."""
+    if repo_name:
+        p = {"repo": repo_name}
+        return {
+            "repository": repo_name,
+            "files": scalar(conn.execute(
+                "MATCH (f:File {repository_name: $repo}) RETURN count(f)", p)),
+            "directories": scalar(conn.execute(
+                "MATCH (d:Directory {repository_name: $repo}) RETURN count(d)", p)),
+            "contains": scalar(conn.execute(
+                "MATCH (d:Directory {repository_name: $repo})-[r:CONTAINS]->() "
+                "RETURN count(r)", p)),
+            "same_dir": scalar(conn.execute(
+                "MATCH (a:File {repository_name: $repo})-[r:SAME_DIR]->() "
+                "RETURN count(r)", p)),
+            "depends_on": scalar(conn.execute(
+                "MATCH (a:File {repository_name: $repo})-[r:DEPENDS_ON]->() "
+                "RETURN count(r)", p)),
+        }
+    return {
+        "repository": "(all)",
+        "files": scalar(conn.execute("MATCH (f:File) RETURN count(f)")),
+        "directories": scalar(conn.execute("MATCH (d:Directory) RETURN count(d)")),
+        "contains": scalar(conn.execute("MATCH ()-[r:CONTAINS]->() RETURN count(r)")),
+        "same_dir": scalar(conn.execute("MATCH ()-[r:SAME_DIR]->() RETURN count(r)")),
+        "depends_on": scalar(conn.execute("MATCH ()-[r:DEPENDS_ON]->() RETURN count(r)")),
+    }
+
+
+def languages(conn, repo_name: str) -> list:
+    """[(language, file_count)] for one repository."""
+    return [(r[0], r[1]) for r in rows_to_dicts(conn.execute("""
+        MATCH (f:File {repository_name: $repo})
+        RETURN f.language, count(f) AS c ORDER BY c DESC
+    """, {"repo": repo_name}))]
+
+
+def sample_files(conn, repo_name: str, limit: int = 10) -> list:
+    return [r[0] for r in rows_to_dicts(conn.execute("""
+        MATCH (f:File {repository_name: $repo})
+        RETURN f.relative ORDER BY f.relative LIMIT $n
+    """, {"repo": repo_name, "n": limit}))]
+
+
+def top_dependencies(conn, repo_name: str, limit: int = 10) -> list:
+    """[(file, dependent_count)] — the most imported files."""
+    return [(r[0], r[1]) for r in rows_to_dicts(conn.execute("""
+        MATCH (s:File {repository_name: $repo})-[:DEPENDS_ON]->(t:File)
+        RETURN t.relative, count(s) AS c ORDER BY c DESC LIMIT $n
+    """, {"repo": repo_name, "n": limit}))]
+
+
+def main():
+    """Prints what is in the Kùzu graph. Run: python3 -m kb.graph.kuzu_store"""
+    import argparse
+    ap = argparse.ArgumentParser(description="Inspect the Kùzu graph store")
+    ap.add_argument("--repo", default=None, help="Scope to one repository")
+    ap.add_argument("--db", default=None, help=f"Database path (default: {KUZU_DB_PATH})")
+    ap.add_argument("--query", default=None, help="Run an arbitrary Cypher query")
+    ap.add_argument("--limit", type=int, default=10, help="Rows to sample (default: 10)")
+    args = ap.parse_args()
+
+    path = args.db or KUZU_DB_PATH
+    if not Path(path).exists():
+        print(f"\n  No Kùzu database at {path}.")
+        print(f"  Run the scan stage first: ./ingestion_pipeline.sh <repo> --only scan\n")
+        return
+
+    try:
+        conn = get_reader(path)          # read-only: coexists with a notebook
+    except RuntimeError as e:
+        print(f"\n  {e}\n")
+        return
+    print(f"\n  Kùzu database: {path}  (read-only)")
+
+    if args.query:
+        res = conn.execute(args.query)
+        rows = rows_to_dicts(res)
+        print(f"  {len(rows)} row(s)\n")
+        for r in rows[:args.limit]:
+            print("   ", r)
+        if len(rows) > args.limit:
+            print(f"    … and {len(rows) - args.limit} more")
+        print()
+        return
+
+    repos = list_repos(conn)
+    print(f"  Repositories : {', '.join(repos) if repos else '(none)'}")
+
+    overall = summarize(conn)
+    print(f"\n  ── Whole graph ──")
+    print(f"    Files        : {overall['files']:,}")
+    print(f"    Directories  : {overall['directories']:,}")
+    print(f"    CONTAINS     : {overall['contains']:,}")
+    print(f"    SAME_DIR     : {overall['same_dir']:,}")
+    print(f"    DEPENDS_ON   : {overall['depends_on']:,}")
+
+    targets = [args.repo] if args.repo else repos
+    for repo in targets:
+        if not repo:
+            continue
+        s = summarize(conn, repo)
+        print(f"\n  ── {repo} ──")
+        print(f"    Files        : {s['files']:,}")
+        print(f"    Directories  : {s['directories']:,}")
+        print(f"    CONTAINS     : {s['contains']:,}")
+        print(f"    SAME_DIR     : {s['same_dir']:,}")
+        print(f"    DEPENDS_ON   : {s['depends_on']:,}")
+
+        langs = languages(conn, repo)
+        if langs:
+            print(f"    Languages    : " +
+                  ", ".join(f"{l} ({n})" for l, n in langs[:6]))
+
+        top = top_dependencies(conn, repo, 5)
+        if top:
+            print(f"    Most imported:")
+            for f, n in top:
+                print(f"       {n:>4}x  {f}")
+        elif s["files"]:
+            print(f"    Most imported: (no DEPENDS_ON edges — run the deps stage)")
+
+        files = sample_files(conn, repo, 5)
+        if files:
+            print(f"    Sample files :")
+            for f in files:
+                print(f"       {f}")
+    print()
+
+
+if __name__ == "__main__":
+    main()

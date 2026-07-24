@@ -5,20 +5,20 @@ Groundwork — Multi-Database Context Retrieval (LangChain)
 Wraps the three knowledge-base stores as a single LangChain retriever:
   1. BERTScore matches the query against key points (from PostgreSQL)
   2. ChromaDB supplies the top files for the best key point
-  3. Neo4j supplies DEPENDS_ON dependencies + directory location
+  3. Kùzu supplies DEPENDS_ON dependencies + directory location
   4. PostgreSQL supplies business rules
 
 The result is exposed as a LangChain BaseRetriever returning Documents,
 so it drops straight into RetrievalQA chains, agents, or any LCEL pipeline.
 
 Usage:
-    python3 grab_context_langchain.py "How does user authentication work?"
-    python3 grab_context_langchain.py "payment processing" --top 3
-    python3 grab_context_langchain.py "session handling" --ask   # full RAG answer
+    python3 grab_context.py "How does user authentication work?"
+    python3 grab_context.py "payment processing" --top 3
+    python3 grab_context.py "session handling" --ask   # full RAG answer
 
 Requirements:
     pip install langchain langchain-core langchain-openai \
-                chromadb psycopg neo4j bert-score python-dotenv
+                chromadb psycopg kuzu bert-score python-dotenv
 """
 
 import os
@@ -29,7 +29,10 @@ from typing import List, Dict, Tuple, Optional
 
 import chromadb
 import psycopg
-from neo4j import GraphDatabase
+from kb.graph.kuzu_store import (
+    get_connection as get_kuzu_connection,
+    get_dependencies as kuzu_get_dependencies,
+)
 from dotenv import load_dotenv
 
 from langchain_core.documents import Document
@@ -58,9 +61,7 @@ DB_CONFIG = {
     "password": os.getenv("POSTGRES_PASSWORD"),
 }
 
-NEO4J_URI      = os.getenv("NEO4J_URI")
-NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+
 
 
 # ── Helpers that read each store (reused by the retriever) ────────────────────
@@ -142,19 +143,15 @@ def get_files_for_keypoint(key_point: str, top_n: int, repo_name: str = None) ->
 
 
 def get_dependencies(file_paths: List[str], repo_name: str = None) -> Dict[str, List[str]]:
+    """Dependency lookup from the embedded Kùzu graph (repo-scoped)."""
     if not file_paths:
         return {}
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
     try:
-        with driver.session() as session:
-            result = session.run("""
-                MATCH (f:File {repository_name: $repo})-[:DEPENDS_ON]->(dep:File)
-                WHERE f.relative IN $file_paths
-                RETURN f.relative AS source, COLLECT(dep.relative) AS dependencies
-            """, file_paths=file_paths, repo=repo_name)
-            return {r["source"]: r["dependencies"] for r in result}
-    finally:
-        driver.close()
+        conn = get_kuzu_connection()
+        return kuzu_get_dependencies(conn, file_paths, repo_name)
+    except Exception as e:
+        print(f"  (graph unavailable: {e})")
+        return {}
 
 
 def get_business_rules(file_paths: List[str], repo_name: str = None) -> Dict[str, List[str]]:
@@ -381,7 +378,7 @@ class GroundworkRetriever(BaseRetriever):
 
         file_paths = [m["meta"]["relative"] for m in file_matches]
 
-        # 4. Neo4j dependencies + 5. Postgres rules
+        # 4. Kùzu dependencies + 5. Postgres rules
         dependencies = get_dependencies(file_paths, repo)
         rules        = get_business_rules(file_paths, repo)
 

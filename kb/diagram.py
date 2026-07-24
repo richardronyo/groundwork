@@ -107,46 +107,57 @@ def resolve_repo_path(repo_name: str, explicit: str = None) -> Path:
 
 # ── 1. Dependency diagram (from Kùzu) ─────────────────────────────────────────
 
-def diagram_deps(repo_name: str, rel_file: str, depth: int = 1) -> str:
+def deps_data(repo_name: str, rel_file: str, depth: int = 1) -> dict:
     """
-    UML class diagram of a file's dependencies (outgoing) and dependents
-    (incoming). Both directions come straight from the Kùzu DEPENDS_ON edges.
+    Gathers a file's dependency neighbourhood once, so the Mermaid emitter and
+    the image renderer draw from identical data instead of querying twice.
     """
     from kb.graph.kuzu_store import get_connection, rows_to_dicts
 
     conn = get_connection()
 
-    # Outgoing: what this file depends on
     out = [r[0] for r in rows_to_dicts(conn.execute(f"""
         MATCH (f:File {{repository_name: $repo, relative: $rel}})
               -[:DEPENDS_ON*1..{depth}]->(d:File)
         RETURN DISTINCT d.relative ORDER BY d.relative
     """, {"repo": repo_name, "rel": rel_file}))]
 
-    # Incoming: what depends on this file
     inc = [r[0] for r in rows_to_dicts(conn.execute(f"""
         MATCH (s:File {{repository_name: $repo}})
               -[:DEPENDS_ON*1..{depth}]->(f:File {{relative: $rel}})
         RETURN DISTINCT s.relative ORDER BY s.relative
     """, {"repo": repo_name, "rel": rel_file}))]
 
-    # Direct edges only, for accurate arrow drawing
     direct_out = [r[0] for r in rows_to_dicts(conn.execute("""
         MATCH (f:File {repository_name: $repo, relative: $rel})-[:DEPENDS_ON]->(d:File)
         RETURN DISTINCT d.relative
     """, {"repo": repo_name, "rel": rel_file}))]
+
     direct_in = [r[0] for r in rows_to_dicts(conn.execute("""
         MATCH (s:File {repository_name: $repo})-[:DEPENDS_ON]->(f:File {relative: $rel})
         RETURN DISTINCT s.relative
     """, {"repo": repo_name, "rel": rel_file}))]
+
+    return {"target": rel_file, "out": out, "inc": inc,
+            "direct_out": direct_out, "direct_in": direct_in,
+            "metrics": _get_metrics(repo_name, [rel_file] + out + inc)}
+
+
+def diagram_deps(repo_name: str, rel_file: str, depth: int = 1) -> str:
+    """
+    UML class diagram of a file's dependencies (outgoing) and dependents
+    (incoming). Both directions come straight from the Kùzu DEPENDS_ON edges.
+    """
+    _d = deps_data(repo_name, rel_file, depth)
+    out, inc = _d["out"], _d["inc"]
+    direct_out, direct_in = _d["direct_out"], _d["direct_in"]
 
     if not out and not inc:
         return (f"%% No DEPENDS_ON edges for {rel_file} in '{repo_name}'.\n"
                 f"%% Run the deps stage, or check the path.\n"
                 f"classDiagram\n    class {node_id(rel_file)}[\"{short(rel_file)}\"]\n")
 
-    # Metrics from PostgreSQL make the classes informative
-    metrics = _get_metrics(repo_name, [rel_file] + out + inc)
+    metrics = _d["metrics"]
 
     lines = ["classDiagram"]
     lines.append(f"    direction LR")
@@ -434,6 +445,32 @@ def diagram_function(repo_name: str, repo_path: Path, func_name: str,
 
 # ── 3. Key point diagram (from ChromaDB) ──────────────────────────────────────
 
+def keypoint_data(repo_name: str, kp_index: int, top_n: int = 10) -> dict:
+    """Files most aligned to one key point — shared by both emitters."""
+    import chromadb
+
+    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    coll_name = collection_name_for(repo_name)
+    available = [c.name for c in client.list_collections()]
+    if coll_name not in available:
+        sys.exit(f"Error: no collection '{coll_name}'. Available: {available}\n"
+                 f"Run: python3 -m kb.vector.embeddings --repo {repo_name}")
+
+    got = client.get_collection(coll_name).get(include=["metadatas", "embeddings"])
+    kp_text, scored = None, []
+    for meta, emb in zip(got["metadatas"], got["embeddings"]):
+        if kp_index >= len(emb):
+            sys.exit(f"Error: key point {kp_index} out of range "
+                     f"(vectors have {len(emb)} dimensions / key points).")
+        scored.append((float(emb[kp_index]), meta.get("relative"), meta))
+        if meta.get("top_kp_index") == kp_index and not kp_text:
+            kp_text = meta.get("top_kp")
+    scored.sort(reverse=True)
+    kp_text = _get_key_point_text(repo_name, kp_index) or kp_text or f"Key point {kp_index}"
+    return {"kp_index": kp_index, "kp_text": kp_text,
+            "top": scored[:top_n], "total": len(scored)}
+
+
 def diagram_keypoint(repo_name: str, kp_index: int, top_n: int = 10) -> str:
     """
     UML diagram of the files most aligned to one repo key point.
@@ -515,6 +552,196 @@ def _get_key_point_text(repo_name: str, kp_index: int):
 
 # ── Output ────────────────────────────────────────────────────────────────────
 
+# ── Image rendering (PNG / JPEG) ──────────────────────────────────────────────
+#
+# Mermaid is text; turning it into a raster needs Node's mermaid-cli, which
+# pulls a headless Chromium. Rather than depend on that, these renderers draw
+# the SAME relationships natively with matplotlib — no external tooling, and
+# the data comes from the same *_data() functions the Mermaid emitters use.
+
+IMG_PRIMARY = "#2e5c8a"
+IMG_ACCENT  = "#c1663a"
+IMG_MUTED   = "#8fa8bf"
+IMG_EDGE    = "#c7cdd4"
+
+
+def _new_fig(w, h):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    return plt.subplots(figsize=(w, h))
+
+
+def _save_image(fig, out_path: Path, dpi: int = 150) -> Path:
+    """Writes .png or .jpg/.jpeg based on the suffix."""
+    import matplotlib.pyplot as plt
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    kw = {}
+    if out_path.suffix.lower() in (".jpg", ".jpeg"):
+        kw["pil_kwargs"] = {"quality": 92}
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight",
+                facecolor="white", **kw)
+    plt.close(fig)
+    return out_path
+
+
+def image_deps(repo_name, rel_file, out_path, depth=1, max_nodes=24) -> Path:
+    """Dependency neighbourhood of one file, as an image."""
+    import networkx as nx
+
+    d = deps_data(repo_name, rel_file, depth)
+    inc, out = d["direct_in"], d["direct_out"]
+
+    if not inc and not out:
+        fig, ax = _new_fig(9, 2.6)
+        ax.text(0.5, 0.5, f"No DEPENDS_ON edges for {short(rel_file, 2)}",
+                ha="center", va="center", fontsize=12, color=IMG_MUTED)
+        ax.axis("off")
+        return _save_image(fig, out_path)
+
+    inc, out = inc[:max_nodes], out[:max_nodes]
+    G = nx.DiGraph()
+    target = short(rel_file, 2)
+    G.add_node(target)
+    pos = {target: (1.0, 0.0)}
+
+    for i, p in enumerate(inc):
+        n = f"in:{short(p, 2)}"
+        G.add_node(n); G.add_edge(n, target)
+        pos[n] = (0.0, (i - (len(inc) - 1) / 2) * 1.0)
+    for i, p in enumerate(out):
+        n = f"out:{short(p, 2)}"
+        G.add_node(n); G.add_edge(target, n)
+        pos[n] = (2.0, (i - (len(out) - 1) / 2) * 1.0)
+
+    height = max(4.0, max(len(inc), len(out)) * 0.42 + 2.0)
+    fig, ax = _new_fig(13, height)
+    nx.draw_networkx_edges(G, pos, ax=ax, edge_color=IMG_EDGE, width=1.2,
+                           arrows=True, arrowsize=13, node_size=1500)
+    nx.draw_networkx_nodes(G, pos, ax=ax, nodelist=[target], node_size=2200,
+                           node_color=IMG_ACCENT, node_shape="s", linewidths=0)
+    others = [n for n in G.nodes() if n != target]
+    nx.draw_networkx_nodes(G, pos, ax=ax, nodelist=others, node_size=900,
+                           node_color=IMG_PRIMARY, linewidths=0)
+
+    ax.text(*pos[target], target, ha="center", va="center",
+            fontsize=8.5, color="white", fontweight="bold")
+    for n in others:
+        x, y = pos[n]
+        label = n.split(":", 1)[1]
+        ha = "right" if x < 1 else "left"
+        ax.text(x + (-0.06 if x < 1 else 0.06), y, label,
+                ha=ha, va="center", fontsize=7.2, color="#33404d")
+
+    ax.set_xlim(-1.15, 3.15)
+    ax.set_title(f"Dependencies — {short(rel_file, 3)}  ({repo_name})\n"
+                 f"left: {len(d['direct_in'])} dependents  ·  "
+                 f"right: {len(d['direct_out'])} dependencies",
+                 fontsize=11, pad=14)
+    ax.axis("off")
+    return _save_image(fig, out_path)
+
+
+def image_function(repo_name, repo_path, func_name, out_path,
+                   max_callers=18, languages=None) -> Path:
+    """Where a function is defined and called, as an image."""
+    import networkx as nx
+
+    definers, importers, callers = scan_function(
+        repo_path, repo_name, func_name, languages)
+
+    if not definers and not callers:
+        fig, ax = _new_fig(9, 2.6)
+        ax.text(0.5, 0.5, f"'{func_name}' not found in any scanned source file",
+                ha="center", va="center", fontsize=12, color=IMG_MUTED)
+        ax.axis("off")
+        return _save_image(fig, out_path)
+
+    ranked = sorted(callers.items(), key=lambda x: -x[1])[:max_callers]
+    G = nx.DiGraph()
+    fn = f"{func_name}()"
+    G.add_node(fn)
+    pos = {fn: (1.0, 0.0)}
+
+    defs = definers[:8]
+    for i, p in enumerate(defs):
+        n = f"def:{short(p, 2)}"
+        G.add_node(n); G.add_edge(n, fn)
+        pos[n] = (0.0, (i - (len(defs) - 1) / 2) * 1.0)
+    for i, (p, cnt) in enumerate(ranked):
+        n = f"call:{short(p, 2)}|{cnt}"
+        G.add_node(n); G.add_edge(fn, n)
+        pos[n] = (2.0, (i - (len(ranked) - 1) / 2) * 1.0)
+
+    height = max(4.0, max(len(defs), len(ranked)) * 0.42 + 2.2)
+    fig, ax = _new_fig(13, height)
+    nx.draw_networkx_edges(G, pos, ax=ax, edge_color=IMG_EDGE, width=1.1,
+                           arrows=True, arrowsize=12, node_size=1400)
+    nx.draw_networkx_nodes(G, pos, ax=ax, nodelist=[fn], node_size=2600,
+                           node_color=IMG_ACCENT, node_shape="s", linewidths=0)
+    dn = [n for n in G.nodes() if n.startswith("def:")]
+    cn = [n for n in G.nodes() if n.startswith("call:")]
+    nx.draw_networkx_nodes(G, pos, ax=ax, nodelist=dn, node_size=950,
+                           node_color=IMG_PRIMARY, node_shape="s", linewidths=0)
+    nx.draw_networkx_nodes(G, pos, ax=ax, nodelist=cn, node_size=800,
+                           node_color=IMG_MUTED, linewidths=0)
+
+    ax.text(*pos[fn], fn, ha="center", va="center",
+            fontsize=9, color="white", fontweight="bold")
+    for n in dn:
+        x, y = pos[n]
+        ax.text(x - 0.06, y, n.split(":", 1)[1] + "  (defines)",
+                ha="right", va="center", fontsize=7.2, color="#33404d")
+    for n in cn:
+        x, y = pos[n]
+        label, cnt = n.split(":", 1)[1].rsplit("|", 1)
+        ax.text(x + 0.06, y, f"{label}  ×{cnt}",
+                ha="left", va="center", fontsize=7.2, color="#33404d")
+
+    ax.set_xlim(-1.25, 3.25)
+    ax.set_title(f"Function {func_name}()  ({repo_name})\n"
+                 f"defined in {len(definers)}  ·  called in {len(callers)} file(s)"
+                 + (f"  ·  showing top {max_callers}" if len(callers) > max_callers else ""),
+                 fontsize=11, pad=14)
+    ax.axis("off")
+    return _save_image(fig, out_path)
+
+
+def image_keypoint(repo_name, kp_index, out_path, top_n=12) -> Path:
+    """Files most aligned to a capability, as a ranked bar chart."""
+    d = keypoint_data(repo_name, kp_index, top_n)
+    top = d["top"]
+
+    if not top:
+        fig, ax = _new_fig(9, 2.6)
+        ax.text(0.5, 0.5, "No vectors — run the embed stage",
+                ha="center", va="center", fontsize=12, color=IMG_MUTED)
+        ax.axis("off")
+        return _save_image(fig, out_path)
+
+    labels = [short(p, 2) for _, p, _ in top][::-1]
+    scores = [s for s, _, _ in top][::-1]
+
+    fig, ax = _new_fig(11, max(3.0, 0.42 * len(top) + 2.0))
+    bars = ax.barh(range(len(top)), scores, color=IMG_PRIMARY)
+    bars[-1].set_color(IMG_ACCENT)
+    ax.set_yticks(range(len(top)))
+    ax.set_yticklabels(labels, fontsize=7.8)
+    ax.set_xlabel("Alignment to this capability", fontsize=9)
+    ax.set_xlim(0, max(scores) * 1.14)
+    for i, s in enumerate(scores):
+        ax.text(s + max(scores) * 0.012, i, f"{s:.3f}", va="center", fontsize=7.2)
+    ax.spines[["top", "right"]].set_visible(False)
+
+    kp = d["kp_text"]
+    wrapped = kp if len(kp) < 84 else kp[:82] + "…"
+    ax.set_title(f"KP{kp_index} — {wrapped}\n"
+                 f"top {len(top)} of {d['total']} files  ({repo_name})",
+                 fontsize=11, pad=14)
+    return _save_image(fig, out_path)
+
+
 def wrap_markdown(mermaid: str, title: str) -> str:
     return f"# {title}\n\n```mermaid\n{mermaid}```\n"
 
@@ -539,8 +766,19 @@ def main():
                              "(e.g. 'C#', 'Razor', 'JavaScript', 'Python')")
     parser.add_argument("--top", type=int, default=10,
                         help="How many files to show (keypoint/function, default 10)")
-    parser.add_argument("--out", default=None, help="Write a .md file instead of printing")
+    parser.add_argument("--format", default="mermaid",
+                        choices=["mermaid", "png", "jpeg", "both"],
+                        help="mermaid = Mermaid source (default); png/jpeg = image; "
+                             "both = Mermaid file + image")
+    parser.add_argument("--dpi", type=int, default=150,
+                        help="Image resolution (default: 150)")
+    parser.add_argument("--out", default=None,
+                        help="Output path. Extension is honoured for images; "
+                             "defaults to diagrams/<repo>_<type>.<ext>")
     args = parser.parse_args()
+
+    repo_path = resolve_repo_path(args.repo, args.repo_path) \
+        if args.type == "function" else None
 
     if args.type == "deps":
         if not args.file:
@@ -562,14 +800,46 @@ def main():
         mermaid = diagram_keypoint(args.repo, args.kp, args.top)
         title = f"Key Point {args.kp} — {args.repo}"
 
-    if args.out:
-        out = Path(args.out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(wrap_markdown(mermaid, title), encoding="utf-8")
-        print(f"  ✓ Wrote {out}")
-        print(f"    Renders in GitHub, Jupyter, or any Mermaid viewer.")
-    else:
-        print(mermaid)
+    # ── Image output ──────────────────────────────────────────────────────
+    want_img = args.format in ("png", "jpeg", "both")
+    if want_img:
+        ext = "png" if args.format in ("png", "both") else "jpeg"
+        if args.out and Path(args.out).suffix.lower() in (".png", ".jpg", ".jpeg"):
+            img_path = Path(args.out)
+        else:
+            stem = {"deps": Path(args.file or "file").stem,
+                    "function": args.function or "function",
+                    "keypoint": f"kp{args.kp}"}[args.type]
+            base = Path(args.out).with_suffix("") if args.out else \
+                   Path("diagrams") / f"{args.repo}_{args.type}_{stem}"
+            img_path = base.with_suffix(f".{ext}")
+
+        if args.type == "deps":
+            p = image_deps(args.repo, args.file, img_path, args.depth)
+        elif args.type == "function":
+            langs = [args.lang] if args.lang else None
+            p = image_function(args.repo, repo_path, args.function, img_path,
+                               max_callers=args.top, languages=langs)
+        else:
+            p = image_keypoint(args.repo, args.kp, img_path, top_n=args.top)
+        print(f"  ✓ Wrote {p}")
+
+    # ── Mermaid output ────────────────────────────────────────────────────
+    if args.format in ("mermaid", "both"):
+        if args.out and not want_img:
+            out = Path(args.out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(wrap_markdown(mermaid, title), encoding="utf-8")
+            print(f"  ✓ Wrote {out}")
+            print(f"    Renders in GitHub, Jupyter, or any Mermaid viewer.")
+        elif args.format == "both":
+            md = (Path(args.out).with_suffix(".md") if args.out
+                  else Path("diagrams") / f"{args.repo}_{args.type}.md")
+            md.parent.mkdir(parents=True, exist_ok=True)
+            md.write_text(wrap_markdown(mermaid, title), encoding="utf-8")
+            print(f"  ✓ Wrote {md}")
+        else:
+            print(mermaid)
 
 
 if __name__ == "__main__":
