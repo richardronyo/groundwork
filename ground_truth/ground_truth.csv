@@ -1,0 +1,196 @@
+﻿Area,Ground Truth
+Order management,Order management functionality serves as the central hub for operational data in the store.
+Order management,"Operational data managed in order management includes orders, payments, shipment processing, inventory updates, and return requests."
+Order management - Orders,The 'Orders' chapter provides information on managing customer orders.
+Order management - Shipping management,The 'Shipping management' chapter covers the processes related to shipping orders.
+Order management - Requests for quote (RFQ),The 'Requests for quote (RFQ)' chapter details how to handle customer requests for quotes.
+Order management - Return requests,The 'Return requests' chapter explains the process for managing product returns.
+Order management - Shopping carts and wishlists,The 'Shopping carts and wishlists' chapter discusses the management of customer shopping carts and wishlists.
+Order management - Inventory management,The 'Inventory management' chapter provides guidance on managing store inventory.
+Order management - Checkout attributes,The 'Checkout attributes' chapter outlines the settings related to the checkout process.
+Order management - Order settings,The 'Order settings' chapter details the configuration options available for order management.
+Order Settings,"To define order settings, go to Configuration → Settings → Order settings."
+Order Settings,The Order settings window enables multi-store configuration.
+Order Settings - Checkout,The 'Checkout disabled' setting disables the checkout process.
+Order Settings - Checkout,The 'Anonymous checkout allowed' setting enables customers to purchase products without registration.
+Order Settings - Checkout,The 'Use one page checkout' setting allows customers to buy a product or service on a single webpage.
+Order Settings - Checkout,The 'Order totals on payment info tab' setting displays a product list and order totals in the payment info tab.
+Order Settings - Checkout,Customers may be required to accept the 'Terms of service' before processing the order on the shopping cart page.
+Order Settings - Checkout,Customers may be required to accept the 'Terms of service' before processing the order on the confirm order page.
+Order Settings - Checkout,The 'Disable Billing address step' setting pre-fills the billing address using default registration data.
+Order Settings - Checkout,The 'Disable Order completed page' setting redirects customers to the order details page after an order is placed.
+Order Settings - Checkout,The 'Display Pickup in store' setting shows the pickup option on the shipping method or shipping address page.
+Order Settings - Order totals,The 'Min order sub-total amount' setting prevents orders below a specified amount from being issued.
+Order Settings - Order totals,The 'Calculate Min order sub-total amount including tax' setting includes tax in the subtotal calculation.
+Order Settings - Order totals,The 'Min order total amount' setting prevents orders below a specified total amount from being issued.
+Order Settings - Order totals,The 'Auto update order totals' setting automatically updates order totals when editing an order in the admin area.
+Order Settings - Common,The 'Order ID counter' setting allows orders to start with a specified number.
+Order Settings - Common,The 'Order number mask' setting allows the creation of a custom order number format.
+Order Settings - Common,The 'Is re-order allowed' setting enables customers to re-order previous items.
+Order Settings - Common,The 'Complete order when delivered' setting marks an order as complete only when its shipping status is delivered.
+Order Settings - Common,The 'Export orders with products' setting allows exporting of orders along with their products.
+Order Settings - Common,The 'Allow admins to buy Call for price products' setting enables administrators to purchase products marked as 'Call for price'.
+Order Settings - Common,The 'Show product thumbnail in order details page' setting displays product thumbnails in the order details.
+Order Settings - PDF invoice,The 'Attach PDF invoice' setting can be configured for various order status emails.
+Order Settings - Gift cards,The 'Activate gift cards after completing of an order' setting activates related gift cards upon order completion.
+Order Settings - Gift cards,The 'Deactivate gift cards after cancelling of an order' setting deactivates related gift cards when an order is canceled.
+Order Settings - Gift cards,The 'Deactivate gift cards after deleting of an order' setting deactivates related gift cards when an order is deleted.
+Order Settings - Gift cards,The 'Delete gift card usage history after order cancellation' setting removes gift card usage history after an order is canceled.
+Order Settings - Return request settings,Return request settings can be configured in the Return request settings panel.
+Rfq - Overview,The RFQ functionality allows customers to submit a Request for Quote for products in their shopping cart.
+Rfq - Overview,The RFQ feature is useful for negotiating bulk discounts or special pricing.
+Rfq - Setup & Configuration,The RFQ plugin can be enabled or disabled with a single setting.
+Rfq - Setup & Configuration,Access Control List (ACL) permissions can be configured for both the storefront and admin panel.
+Rfq - Customer Workflow,A new button appears on the shopping cart page if the RFQ plugin is active and permitted by ACLs.
+Rfq - Customer Workflow,Users can edit their RFQ request before submitting it.
+Rfq - Customer Workflow,"Once submitted, the RFQ can no longer be edited by the user."
+Rfq - Customer Workflow,Users can manage their RFQs and Quotes from their account section after submission.
+Rfq - Customer Workflow,Users receive an email notification when a new quote is sent.
+Rfq - Customer Workflow,Users can create an order from an acceptable quote that is not expired.
+Rfq - Customer Workflow,"Once a cart is generated from a quote, it enters 'quote mode' and cannot be modified."
+Rfq - Customer Workflow,Users can exit quote mode to return to the main store page.
+Rfq - Administrator Workflow,Store owners receive an email notification when a user submits an RFQ.
+Rfq - Administrator Workflow,Admins can view and manage RFQs and Quotes from the admin panel.
+Rfq - Administrator Workflow,"Admins can modify, delete, or cancel an RFQ from the RFQ list."
+Rfq - Administrator Workflow,Admins can create a quote directly from an RFQ.
+Rfq - Administrator Workflow,Admins can edit a quote by modifying product data and setting an expiration date.
+Rfq - Administrator Workflow,A quote remains hidden from the user until the admin sends it.
+Rfq - Administrator Workflow,"Once a quote is sent, it cannot be edited by the administrator."
+Rfq - Administrator Workflow,A sent quote can only be deleted if the user has not created an order from it.
+Shopping Carts And Wishlists,Store owners can view all existing shopping carts and wishlists of customers on one page by accessing Sales → Shopping carts and wishlists.
+Shopping Carts And Wishlists - Shopping Cart,Selecting 'Shopping cart' from the Shopping cart type dropdown and clicking 'Search' displays a list of all products placed in carts but not purchased.
+Shopping Carts And Wishlists - Shopping Cart,The 'Remove' button in the shopping cart allows customers to remove an item from the cart.
+Shopping Carts And Wishlists - Shopping Cart,The 'Qty.' button allows customers to change a product's quantity in the shopping cart.
+Shopping Carts And Wishlists - Shopping Cart,The 'Continue shopping' button allows customers to proceed to the catalog from the shopping cart.
+Shopping Carts And Wishlists - Shopping Cart,The 'Estimate shipping' button allows customers to estimate shipping costs by entering their shipping address.
+Shopping Carts And Wishlists - Shopping Cart,Shipping estimation can be disabled by clearing the 'Estimate shipping enabled (cart page)' checkbox in the Shipping settings.
+Shopping Carts And Wishlists - Shopping Cart,The 'Gift wrapping' dropdown is a checkout attribute that can be managed in the Checkout attributes chapter.
+Shopping Carts And Wishlists - Shopping Cart,"Customers can enter a discount code in the shopping cart, which can be disabled by clearing the 'Show discount box' checkbox in the Shopping cart settings."
+Shopping Carts And Wishlists - Shopping Cart,"Customers can use gift cards in the shopping cart, which can be disabled by clearing the 'Show gift card box' checkbox in the Shopping cart settings."
+Shopping Carts And Wishlists - Shopping Cart,"The shopping cart totals section displays the shipping fee, tax info, reward points earned, and terms of service."
+Shopping Carts And Wishlists - Wishlist,Selecting 'Wishlist' from the Shopping cart type dropdown and clicking 'Search' displays the customer's wishlists.
+Shopping Carts And Wishlists - Wishlist,A wishlist is a list of products that customers can share or save for later.
+Shopping Carts And Wishlists - Wishlist,The 'Add to wishlist' button appears on the product details page if adding to wishlist is enabled for that product.
+Shopping Carts And Wishlists - Multiple Wishlist,"Registered customers can create and manage multiple wishlists, with one default wishlist that cannot be renamed or deleted."
+Shopping Carts And Wishlists - Multiple Wishlist,The default wishlist is named 'Wishlist' and is permanent.
+Shopping Carts And Wishlists - Multiple Wishlist,"Registered users can create custom wishlists that can be named, managed, and deleted."
+Shopping Carts And Wishlists - Multiple Wishlist,"When adding a product to a wishlist, if no custom wishlists exist, it is added to the default 'Wishlist'."
+Shopping Carts And Wishlists - Multiple Wishlist,"If at least one custom wishlist exists, products are added to the default wishlist and users are prompted to move them to a custom wishlist."
+Shopping Carts And Wishlists - Multiple Wishlist,Users can move products between wishlists using a dropdown menu on the Wishlist page.
+Shopping Carts And Wishlists - Shopping Cart and Wishlist Settings,Shopping cart and wishlist settings can be changed in the Configuration → Settings → Shopping cart settings page.
+Shopping Carts And Wishlists - Common Settings,"Common settings include options to show discount and gift card boxes, allow cart item editing, and set maximum shopping cart items."
+Shopping Carts And Wishlists - Mini Shopping Cart Settings,Mini shopping cart settings include options to show the mini shopping cart and define the number of products displayed.
+Shopping Carts And Wishlists - Wishlist Settings,"Wishlist settings include maximum wishlist items, allowing customers to email their wishlist, and enabling multiple wishlists."
+Shipping Management - Overview,"To search for shipments, go to Sales → Shipments."
+Shipping Management - Shipment List,"The top area of the shipment list page allows searching by start date, end date, tracking number, warehouse, country, state/province, county/region, and city."
+Shipping Management - Shipment List,The 'Load not delivered' checkbox excludes already delivered items from the shipment list.
+Shipping Management - Shipment List,The 'Load not shipped' checkbox excludes already shipped items from the shipment list.
+Shipping Management - Shipment List,The 'Load not ready for pickup' checkbox includes only items that are not ready for pickup.
+Shipping Management - Shipment List,"Store owners can set selected shipments as shipped, delivered, or ready for pickup."
+Shipping Management - Shipment List,Store owners can print packaging slips for selected or all shipments.
+Shipping Management - Shipment Details,Clicking 'View' opens the shipment details window.
+Shipping Management - Shipment Details,"In the shipment details window, users can set a tracking number, add an admin comment, view shipment total weight, mark the shipment as shipped or delivered, edit shipment dates, print packaging slips, and delete the shipment."
+Shipping Management - Shipment Details,"If 'Pick up in store' is selected, the shipment can be marked as ready for pickup."
+Shipping Management - Shipping Settings,Shipping can be set up in the Configure shipping section.
+Inventory Management,Inventory management is a system of stock level control in nopCommerce.
+Inventory Management - Setting Up Inventory,"To set up inventory, go to Catalog → Products → Edit a product."
+Inventory Management - Inventory Methods,"There are three inventory methods: Don't track inventory, Track inventory, and Track inventory by product attributes."
+Inventory Management - Don't Track Inventory,Store owners can choose the Don't track inventory option for products that do not require inventory tracking.
+Inventory Management - Don't Track Inventory Settings,"When not tracking inventory, store owners can define a Warehouse for shipping rates."
+Inventory Management - Don't Track Inventory Settings,Store owners can set a Minimum cart qty to restrict the quantity allowed in a customer's shopping cart.
+Inventory Management - Don't Track Inventory Settings,Store owners can set a Maximum cart qty to limit the quantity allowed in a customer's shopping cart.
+Inventory Management - Don't Track Inventory Settings,Store owners can enter a comma-separated list of Allowed quantities for the product.
+Inventory Management - Don't Track Inventory Settings,Store owners can select the Not returnable checkbox to indicate that the product is not returnable.
+Inventory Management - Track Inventory,Store owners can select Track inventory to monitor stock levels for products without variants.
+Inventory Management - Track Inventory Settings,"The Stock quantity field indicates the total quantity of the product, which decreases when an order is shipped."
+Inventory Management - Track Inventory Settings,Store owners can manage warehouses for shipping rates under Configuration → Shipping → Warehouses.
+Inventory Management - Track Inventory Settings,Store owners can select the Multiple warehouses checkbox to manage inventory from multiple warehouses.
+Inventory Management - Track Inventory Settings,The Reserved qty field indicates the quantity ordered but not yet shipped.
+Inventory Management - Track Inventory Settings,The Planned qty field indicates the quantity added to a shipment but not yet shipped.
+Inventory Management - Track Inventory Settings,Store owners can select the Display availability checkbox to show stock availability in the public store.
+Inventory Management - Track Inventory Settings,Store owners can select the Display stock quantity checkbox to show the stock quantity on the product details page.
+Inventory Management - Track Inventory Settings,The Minimum stock qty field sets a threshold for stock levels.
+Inventory Management - Track Inventory Settings,Store owners can choose an action from the Low stock activity dropdown list when stock falls below the minimum stock quantity.
+Inventory Management - Track Inventory Settings,Store owners can set Backorders to allow purchases when stock is unavailable.
+Inventory Management - Track Inventory Settings,The Allow back in stock subscriptions option enables customers to subscribe for notifications about product availability.
+Inventory Management - Track Inventory by Product Attributes,Store owners can select Track inventory by product attributes to manage stock for various product attribute combinations.
+Inventory Management - Track Inventory by Product Attributes Settings,Store owners can choose the Warehouse for shipping rates under Configuration → Shipping → Warehouses.
+Inventory Management - Track Inventory by Product Attributes Settings,Store owners can select the Display availability checkbox to show stock availability in the public store.
+Inventory Management - Track Inventory by Product Attributes Settings,Store owners can select the Display stock quantity checkbox to show the stock quantity on the product details page.
+Inventory Management - Track Inventory by Product Attributes Settings,Store owners can set a Product availability range to display when the product is not available.
+Inventory Management - Track Inventory by Product Attributes Settings,Store owners can set Minimum cart qty and Maximum cart qty for products with attributes.
+Inventory Management - Track Inventory by Product Attributes Settings,Store owners can enter a comma-separated list of Allowed quantities for products with attributes.
+Inventory Management - Track Inventory by Product Attributes Settings,Store owners can select Allow only existing attribute combinations to restrict purchases to available stock.
+Inventory Management - Stock Quantity for Attribute Combinations,"To set Stock quantity for different attribute combinations, go to the Attribute combinations tab of the Product attributes panel."
+Inventory Management - Low Stock Reports,Store owners can view a low stock report under Reports → Low stock.
+Return Requests,The return request feature enables customers to request a return on items previously purchased.
+Return Requests,Return requests are only available for completed orders.
+Return Requests,Return requests settings are managed in Configuration → Settings → Order settings in the Return request settings panel.
+Return Requests,"To enable return requests, the 'Enable returns system' checkbox must be selected."
+Return Requests,"When enabled, a 'Return item(s)' button is displayed for completed orders on the order details page."
+Return Requests - Submit a Return Request,Customers can submit a return request by going to the My account window and clicking Orders.
+Return Requests - Submit a Return Request,Customers can select the quantity to return using the Qty to return dropdown list.
+Return Requests - Submit a Return Request,Customers can select a return reason from the Return reason dropdown list.
+Return Requests - Submit a Return Request,Customers can select a return action from the Return action dropdown list.
+Return Requests - Submit a Return Request,Customers can upload additional documents or pictures if the Allow file uploads checkbox is selected.
+Return Requests - Submit a Return Request,Customers can enter optional comments in the Comments field when submitting a return request.
+Return Requests - Manage Return Requests,Store owners can manage return requests in the administration area under Sales → Return requests.
+Return Requests - Manage Return Requests,Store administrators can view and edit return request details.
+Return Requests - Manage Return Requests,Store administrators can select the return request status from a predefined list.
+Return Requests - Manage Return Requests,Store administrators can edit the reason for return and requested action if necessary.
+Return Requests - Return Request Settings,Return request settings can be defined in Configuration → Settings → Order settings.
+Return Requests - Return Request Settings,The return request number mask can be specified in the Return request settings panel.
+Return Requests - Return Request Settings,The number of days that the return request is available can be set in the Return request settings panel.
+Return Requests - Return Request Reasons,A list of reasons for return can be managed in the Return request reasons panel.
+Return Requests - Return Request Actions,A list of actions for return requests can be managed in the Return request actions panel.
+Checkout Attributes,Checkout attributes represent additional order information gathered during the final stage of the shopping process.
+Checkout Attributes,Shop owners can specify whether a bought product requires gift wrapping or careful handling using checkout attributes.
+Checkout Attributes,Checkout attributes are displayed on the shopping cart page and can be selected by users before checkout.
+Checkout Attributes - Setup,"To set up or edit checkout attributes, navigate to Catalog → Attributes → Checkout attributes."
+Checkout Attributes - Add New,"To create a new checkout attribute, click 'Add new' to open the 'Add a new checkout attribute' window."
+Checkout Attributes - Modes,The 'Add a new checkout attribute' page is available in advanced and basic modes.
+Checkout Attributes - Attribute Info,The 'Attribute info' panel requires defining the attribute name and text prompt.
+Checkout Attributes - Control Types,"The 'Control type' dropdown allows selection of display methods such as Dropdown list, Radio button list, Checkboxes, or Textbox."
+Checkout Attributes - Validation Rules,"Textbox and Date picker control types do not require predefined values, while Dropdown lists and others do."
+Checkout Attributes - Required Checkbox,Selecting the 'Required' checkbox makes the attribute value selection mandatory before purchase completion.
+Checkout Attributes - Shippable Product,The 'Shippable product required' checkbox displays the attribute only for products that need to be shipped.
+Checkout Attributes - Tax Exemption,The 'Tax exempt' checkbox indicates that no tax will be applied to the checkout attribute.
+Checkout Attributes - Tax Category,"If tax is applied, the tax category for the checkout attribute must be selected from the dropdown list."
+Checkout Attributes - Store Limitation,'Limited to stores' allows restricting the attribute to specific stores.
+Checkout Attributes - Multi-store Functionality,"To use store limitation, the setting 'Ignore limit per store rules (sitewide)' must be disabled."
+Checkout Attributes - Save Changes,Clicking 'Save and continue edit' proceeds to the 'Attribute values' panel.
+Checkout Attributes - Add Value,"In the 'Attribute values' panel, clicking 'Add a new checkout attribute value' creates a new attribute value."
+Checkout Attributes - Value Information,The 'Add a new checkout attribute value' window requires defining the attribute value name.
+Checkout Attributes - Price Adjustment,The 'Price adjustment' adds an amount to the total purchase sum if the attribute value is selected.
+Checkout Attributes - Weight Adjustment,The 'Weight adjustment' changes the order weight by the entered amount if the attribute value is selected.
+Checkout Attributes - Pre-selected Checkbox,The 'Pre-selected' checkbox indicates that the attribute value is preselected for the customer.
+Checkout Attributes - Condition Panel,"In the 'Condition' panel, a store owner can specify conditions for the checkout attribute's visibility."
+Checkout Attributes - Save Condition,Clicking 'Save' displays the new attribute on the shopping cart page in the public store.
+Orders,"To view and manage orders, go to Sales → Orders."
+Orders,The orders page lists all current orders.
+Orders,A new order appears on the orders page after a customer completes a transaction.
+Orders - Search for orders,"Store owners can search for orders using various criteria including start date, end date, warehouse, product name, order statuses, payment statuses, shipping statuses, store, vendor, billing phone number, billing email address, billing last name, billing country, payment method, order notes, and order number."
+Orders - Export orders,Orders can be exported to an external file by clicking the Export button.
+Orders - Import orders,Orders can be imported from Excel by clicking the Import button and selecting a file.
+Orders - Import orders,"Imported orders are distinguished by order GUID, and existing orders will be updated if the order GUID already exists."
+Orders - Import orders,"It is not recommended to import more than 500 - 1,000 records at once due to memory resource requirements."
+Orders - Order details,Clicking View beside an order displays the full order information.
+Orders - Order details,The Invoice (PDF) button generates an invoice for the order in PDF format.
+Orders - Order details,The order status is only Completed when the payment status is Paid and the shipping status is Delivered.
+Orders - Order details,Store owners can manually change the order status using the Change status button.
+Orders - Order details,"Store owners can cancel an order, which requires confirmation."
+Orders - Order details,The Edit credit card button is visible when the Manual Credit Card payment method is used.
+Orders - Order details,"The payment status can be Pending, Authorized, Paid (captured), Refunded, Partially refunded, or Voided."
+Orders - Order details,"If the payment status is Authorized, the Void and Capture buttons are available."
+Orders - Order details,"If the payment status is Pending, the Mark as paid button can be clicked."
+Orders - Order details,"If the payment status is Paid, the Refund and Partial refund buttons are available."
+Orders - Billing & shipping,Store owners can view and edit billing and shipping information.
+Orders - Billing & shipping,Store owners can create several shipments per order.
+Orders - Billing & shipping,The shipping status changes to Partially shipped if not all products are shipped.
+Orders - Billing & shipping,The shipping status changes to Shipped once all products are shipped.
+Orders - Billing & shipping,The shipping status changes to Delivered once all shipments are delivered.
+Orders - Products,"Store owners can view product information including price, quantity, and total price."
+Orders - Products,"Store owners can edit the product's price, quantity, discount, and total."
+Orders - Products,Store owners can delete a product from the system.
+Orders - Products,Store owners can add a product to an order by selecting it from a list.
+Orders - Order notes,"Store owners can view, delete, and add notes to an order."
