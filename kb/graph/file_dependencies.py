@@ -211,12 +211,16 @@ def build_lookup(files: list[dict]) -> dict:
     return lookup
 
 
-def resolve(raw_import: str, source_file: str, lookup: dict, repo_root: Path,
+def resolve(raw_import: str, source_file: str, lookup: dict, disk_base: Path,
             source_language: str = None) -> str | None:
     """
     Resolves a raw import string to a known relative file path, searching ONLY
     within the source file's own language group so imports can't leak across
     languages (a C# `using ...Catalog` must not match catalog.js).
+
+    `disk_base` is the directory CONTAINING the repo (repo_root.parent) —
+    `source_file` and every value in `lookup` already start with the repo
+    name, so joining/reversing against disk_base keeps everything consistent.
     """
     raw = raw_import.strip()
     lookup = lookup.get(group_of(source_language or ""), {})
@@ -224,8 +228,8 @@ def resolve(raw_import: str, source_file: str, lookup: dict, repo_root: Path,
     # ── 1. Relative path imports (JS/Ruby/Shell: ./foo, ../bar) ──────────────
     if raw.startswith("."):
         # Resolve against the SOURCE FILE's directory inside the repo — not the
-        # process CWD. Anchoring on the repo root is what makes "./foo" work.
-        root = repo_root.resolve()
+        # process CWD. Anchoring on disk_base is what makes "./foo" work.
+        root = disk_base.resolve()
         source_dir = (root / source_file).parent
         candidate = (source_dir / raw).resolve()
         for ext in ("", ".py", ".js", ".jsx", ".ts", ".tsx", ".cs", ".java",
@@ -271,7 +275,13 @@ def extract_dependencies(
     For each file, reads the first n_lines, extracts imports,
     resolves them to known files, and returns a list of
     (source_relative, target_relative) tuples.
+
+    `relative` values (in `files` and the returned tuples) start with the
+    repo name itself, e.g. "nopCommerce/src/x.cs". `repo_root` is the repo's
+    OWN path on disk, which already ends in the repo name — so disk reads
+    join against repo_root.parent, not repo_root, to avoid doubling it.
     """
+    disk_base = repo_root.resolve().parent
     lookup = build_lookup(files)
     edges  = []
     seen   = set()
@@ -284,7 +294,7 @@ def extract_dependencies(
         if not extractor:
             continue
 
-        full_path = repo_root / rel
+        full_path = disk_base / rel
         if not full_path.exists():
             continue
 
@@ -297,7 +307,7 @@ def extract_dependencies(
         raw_imports = extractor(lines)
 
         for raw in raw_imports:
-            target = resolve(raw, rel, lookup, repo_root, language)
+            target = resolve(raw, rel, lookup, disk_base, language)
             if target and target != rel:
                 key = (rel, target)
                 if key not in seen:

@@ -36,7 +36,10 @@ def run(repo_root: str, python_only: bool = False):
             bar = "█" * pct + "░" * (40 - pct)
             print(f"\r  [{bar}] {i+1}/{total}", end="", flush=True)
 
-            save_file(conn, repo_name, rel_path, data["language"], data["metrics"])
+            # rel_path from parser.py is relative to repo_root and does NOT include
+            # the repo name; prefix it so files.file_path matches the convention
+            # used everywhere else ("<repo_name>/<path within repo>").
+            save_file(conn, repo_name, f"{repo_name}/{rel_path}", data["language"], data["metrics"])
             saved += 1
         conn.commit()
         print(f"\n\n  ✓ Saved metrics for {saved} files to PostgreSQL.\n")

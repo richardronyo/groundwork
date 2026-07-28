@@ -23,9 +23,9 @@ depth) and caps how many nodes are drawn, keeping the busiest ones.
 Run from the PROJECT ROOT.
 
 Usage:
-    python3 -m kb.system_report --repo nopCommerce
-    python3 -m kb.system_report --repo nopCommerce --out reports/nop.pdf
-    python3 -m kb.system_report --repo flask --module-depth 2 --max-nodes 25
+    python3 -m system_report --repo nopCommerce
+    python3 -m system_report --repo nopCommerce --out reports/nop.pdf
+    python3 -m system_report --repo flask --module-depth 2 --max-nodes 25
 
 Requirements:
     pip install matplotlib networkx reportlab psycopg kuzu chromadb python-dotenv

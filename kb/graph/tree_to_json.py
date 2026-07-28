@@ -1,17 +1,33 @@
 #!/usr/bin/env python3
 """
 Groundwork — Tree to JSON
-Parses `tree` CLI output (or any tree-style text) into a flat JSON file list.
+
+Parses `tree -fi <repo_path>` output into a flat JSON file list. `relative`
+always starts with the repo name itself, e.g. "nopCommerce/src/Libraries/...".
+
+INVOCATION CHANGED: this expects `tree -fi`, not `tree -f`.
+    -f  full path per entry (unchanged)
+    -i  no indentation / box-drawing prefix — one full path per line, nothing
+        else to parse
+
+Why the rewrite: the previous version parsed `tree -f`'s indentation to
+reconstruct the directory hierarchy, using an `is_dir()` check that looked
+for a trailing "/" on directory names. `tree -f` alone never adds that
+(only `-F` does), so the directory branch never fired, `relative` never
+sees anything past the initial repo_root, and every entry's `relative`
+ended up being the RAW FULL ABSOLUTE PATH from disk. That's what ended up
+sitting in Kùzu. Parsing `-fi`'s flat full-path-per-line output instead
+sidesteps indentation entirely — no dependency on tree's Unicode-vs-ASCII
+connector characters, which vary by locale and could break the old parser
+outright in a non-UTF-8 shell.
 
 Usage:
-    tree -f /path/to/repo | python3 tree_to_json.py > files.json
-    python3 tree_to_json.py < nopCommerce_tree.txt > files.json
-    python3 tree_to_json.py nopCommerce_tree.txt > files.json
+    tree -fi /path/to/repo | python3 tree_to_json.py > files.json
+    python3 tree_to_json.py nopCommerce_tree.txt > files.json   # from a saved -fi dump
 """
 
 import sys
 import json
-import re
 import os
 
 LANGUAGE_MAP = {
@@ -61,70 +77,43 @@ LANGUAGE_MAP = {
     "xml":      "XML",
 }
 
-# Matches tree drawing characters: ├── └── │   and leading spaces
-TREE_PREFIX_RE = re.compile(r'^[│├└─\s]+')
-# Summary line at bottom e.g. "1055 directories, 6649 files"
-SUMMARY_RE = re.compile(r'^\d+ director')
-
 
 def get_language(filename: str) -> str:
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     return LANGUAGE_MAP.get(ext, "Other")
 
 
-def get_depth(line: str) -> int:
+def parse_tree(lines: list[str], repo_root: str, repo_name: str) -> list[dict]:
     """
-    Depth is determined by how many 4-char tree-prefix blocks precede the name.
-    Each level adds one of: '│   ' '    ' '├── ' '└── '
+    Each line is a full absolute path (tree -fi output — one entry per line,
+    no indentation to parse). Directories are skipped: json_to_graph.py
+    already reconstructs the directory hierarchy from each file's `relative`
+    path, so there's nothing to lose by not emitting them here.
+
+    `relative` is built by stripping repo_root's own path off the front and
+    re-prefixing with repo_name, so it always reads "<repo_name>/...".
     """
-    prefix = TREE_PREFIX_RE.match(line)
-    if not prefix:
-        return 0
-    return len(prefix.group(0)) // 4
-
-
-def is_dir(name: str) -> bool:
-    return name.endswith("/")
-
-
-def parse_tree(lines: list[str], repo_root: str = "") -> list[dict]:
     files = []
-    # dir_stack[depth] = current directory name at that depth
-    dir_stack: list[str] = [repo_root]
+    prefix = repo_root.rstrip("/") + "/"
 
     for line in lines:
-        # Skip blank lines and summary lines
-        stripped = line.rstrip()
-        if not stripped or SUMMARY_RE.match(stripped):
-            continue
+        full_path = line.rstrip("\n").rstrip()
+        if not full_path or not full_path.startswith(prefix):
+            continue          # blank line or stray non-path output (e.g. a report line)
 
-        # Extract the actual name by stripping tree characters
-        name = TREE_PREFIX_RE.sub("", stripped).strip()
-        if not name:
-            continue
+        if os.path.isdir(full_path):
+            continue          # directories are derived downstream from file paths
 
-        depth = get_depth(stripped)
-
-        if is_dir(name):
-            # Directory — push onto stack at this depth
-            clean = name.rstrip("/")
-            # Trim stack to current depth and append
-            dir_stack = dir_stack[: depth + 1]
-            if len(dir_stack) <= depth:
-                dir_stack.append(clean)
-            else:
-                dir_stack[depth] = clean
-        else:
-            # File — build its relative path from the stack
-            parent_parts = dir_stack[1 : depth + 1]  # skip repo root
-            relative = "/".join(parent_parts + [name]) if parent_parts else name
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            files.append({
-                "name":      name,
-                "relative":  relative,
-                "extension": ext,
-                "language":  get_language(name),
-            })
+        tail = full_path[len(prefix):]        # path within the repo, no repo name yet
+        relative = f"{repo_name}/{tail}"
+        name = os.path.basename(full_path)
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        files.append({
+            "name":      name,
+            "relative":  relative,
+            "extension": ext,
+            "language":  get_language(name),
+        })
 
     return files
 
@@ -141,16 +130,17 @@ def main():
         print("[]")
         return
 
-    # First non-empty line is the repo root name
+    # First non-empty line is the repo root's own full path (tree -fi prints it bare)
     repo_root = ""
     for line in lines:
         stripped = line.strip()
-        if stripped and not SUMMARY_RE.match(stripped):
+        if stripped:
             repo_root = stripped.rstrip("/")
             lines = lines[1:]  # consume it
             break
 
-    files = parse_tree(lines, repo_root)
+    repo_name = os.path.basename(repo_root)
+    files = parse_tree(lines, repo_root, repo_name)
 
     print(json.dumps(files, indent=2))
 
@@ -159,7 +149,7 @@ def main():
     for f in files:
         langs[f["language"]] = langs.get(f["language"], 0) + 1
 
-    print(f"\n  Parsed {len(files)} files from '{repo_root}'", file=sys.stderr)
+    print(f"\n  Parsed {len(files)} files from '{repo_name}'", file=sys.stderr)
     print(  "  Languages:", file=sys.stderr)
     for lang, count in sorted(langs.items(), key=lambda x: -x[1])[:10]:
         bar = "█" * min(count // 10 + 1, 30)

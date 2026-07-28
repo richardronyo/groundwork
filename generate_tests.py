@@ -18,10 +18,10 @@ Output:
     weakness/          the weakness reports, as PDF
 
 Usage:
-    python3 -m kb.generate_tests --repo flask --file src/app.py
-    python3 -m kb.generate_tests --repo flask --file src/auth.py --function login
-    python3 -m kb.generate_tests --repo flask --file src/app.py --out tests/
-    python3 -m kb.generate_tests --repo flask --file src/app.py --print
+    python3 -m generate_tests --repo flask --file src/app.py
+    python3 -m generate_tests --repo flask --file src/auth.py --function login
+    python3 -m generate_tests --repo flask --file src/app.py --out tests/
+    python3 -m generate_tests --repo flask --file src/app.py --print
 
 Requirements:
     pip install openai psycopg kuzu python-dotenv

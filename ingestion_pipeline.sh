@@ -155,7 +155,7 @@ trap 'rm -f "$TEMP_JSON"' EXIT
 generate_tree() {
     if [[ ! -s "$TEMP_JSON" ]]; then
         print_info "Scanning file tree..."
-        tree -f "$REPO_PATH" | python3 -m "$TREE_TO_JSON_MOD" > "$TEMP_JSON"
+        tree -fi "$REPO_PATH" | python3 -m "$TREE_TO_JSON_MOD" > "$TEMP_JSON"
         local count
         count=$(python3 -c "import json;print(len(json.load(open('$TEMP_JSON'))))")
         print_success "Found $count files"

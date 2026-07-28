@@ -407,13 +407,18 @@ def _process_one_file(file_meta, repo_root, max_lines, client, limiter):
     Worker: extract rules for a single file. Returns (file_id, rules).
     Does NOT touch the DB — the caller owns DB writes so connections stay
     per-thread/serialized. Safe to run concurrently.
+
+    file_meta["file_path"] starts with the repo name (e.g. "flask/src/x.py").
+    repo_root is the repo's own directory on disk, which already ends in the
+    repo name — so the disk read joins against repo_root.parent to avoid
+    doubling it.
     """
     rel      = file_meta["file_path"]
     file_id  = file_meta["file_id"]
     language = file_meta["language"]
     name     = Path(rel).name
 
-    code = read_file(repo_root / rel, max_lines)
+    code = read_file(repo_root.parent / rel, max_lines)
     rules = []
     if code.strip():
         file_json = {"name": name, "relative": rel,
