@@ -2,8 +2,10 @@
 """
 Groundwork — Stage 1b: File Metrics → PostgreSQL
 
-Parses every file's metrics (via parser.py) and saves them to the files table.
-No JSON. No business rules here — just metrics. Idempotent.
+Parses every file's metrics AND structural detail (via parser.py) and saves
+them to PostgreSQL: counts to `files`, names/signatures to `classes` /
+`class_attributes` / `functions`. No JSON. No business rules here — just
+metrics + structure. Idempotent — safe to re-run.
 
 Usage:
     python3 metadata.py ./flask
@@ -15,7 +17,7 @@ import argparse
 from pathlib import Path
 
 import kb.relationaldb.parser as repo_parser
-from kb.relationaldb.initialize_db import get_connection, save_file
+from kb.relationaldb.initialize_db import get_connection, save_file, save_structure
 
 
 def run(repo_root: str, python_only: bool = False):
@@ -30,6 +32,8 @@ def run(repo_root: str, python_only: bool = False):
     conn = get_connection()
     try:
         saved = 0
+        total_classes = 0
+        total_functions = 0
         total = len(metrics_map)
         for i, (rel_path, data) in enumerate(metrics_map.items()):
             pct = int((i + 1) / total * 40) if total else 40
@@ -39,10 +43,20 @@ def run(repo_root: str, python_only: bool = False):
             # rel_path from parser.py is relative to repo_root and does NOT include
             # the repo name; prefix it so files.file_path matches the convention
             # used everywhere else ("<repo_name>/<path within repo>").
-            save_file(conn, repo_name, f"{repo_name}/{rel_path}", data["language"], data["metrics"])
+            file_id = save_file(conn, repo_name, f"{repo_name}/{rel_path}",
+                                data["language"], data["metrics"])
+
+            structure = data.get("structure") or {"classes": [], "functions": []}
+            if structure["classes"] or structure["functions"]:
+                save_structure(conn, file_id, structure["classes"], structure["functions"])
+                total_classes += len(structure["classes"])
+                total_functions += len(structure["functions"])
+
             saved += 1
         conn.commit()
-        print(f"\n\n  ✓ Saved metrics for {saved} files to PostgreSQL.\n")
+        print(f"\n\n  ✓ Saved metrics for {saved} files to PostgreSQL.")
+        print(f"  ✓ Saved {total_classes} classes and {total_functions} free functions "
+              f"(names, attributes, methods).\n")
     finally:
         conn.close()
 

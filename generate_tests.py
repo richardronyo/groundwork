@@ -31,6 +31,7 @@ import os
 import re
 import sys
 import argparse
+from collections import defaultdict
 from pathlib import Path
 
 from openai import OpenAI
@@ -86,10 +87,139 @@ def output_filename(file_path: str) -> str:
     return pattern.format(stem=stem, Stem=stem[:1].upper() + stem[1:])
 
 
+# ── Existing-test detection ────────────────────────────────────────────────────
+#
+# infer_framework() above is a pure guess from file extension (.cs -> xUnit).
+# That's a reasonable default for a repo with no tests yet, but if the repo
+# already HAS tests, the actually-correct answer is whatever THEY use — a
+# .NET repo could be on NUnit or MSTest instead of xUnit, a JS repo could be
+# on Vitest instead of Jest, etc. This finds the repo's own test files (by
+# convention: living under a "Test(s)" path segment, or with "test" in the
+# filename — no special DB flag needed) and sniffs the actual framework from
+# their content, falling back to the extension guess only if nothing's found.
+
+TEST_DIR_RE = re.compile(r"(^|/)(?:[Tt]ests?|[Ss]pecs?)(/|$)")
+TEST_WORD_RE = re.compile(r"^(tests?|specs?)$")
+
+
+def _stem_words(stem: str) -> list[str]:
+    """Splits a filename stem into words across camelCase/PascalCase/snake_case/
+    dots, e.g. 'OrderControllerTests' -> ['order','controller','tests'],
+    'test_app' -> ['test','app']. Used instead of a plain substring search so
+    'AttestationService' or 'ContestService' don't false-positive on "test"."""
+    parts = re.split(r"[_\-.]+", stem)
+    words = []
+    for p in parts:
+        words.extend(re.findall(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z0-9]+|[A-Z]+", p))
+    return [w.lower() for w in words if w]
+
+
+def _looks_like_test_file(stem: str) -> bool:
+    return any(TEST_WORD_RE.match(w) for w in _stem_words(stem))
+
+# Checked in order; first match wins. More specific variants (e.g. Jest+RTL)
+# come before their more generic parent (plain Jest) since the specific one
+# implies the generic one but not vice versa.
+FRAMEWORK_SIGNATURES = [
+    ("xUnit", re.compile(r"using\s+Xunit\s*;|\[Fact\]|\[Theory\]")),
+    ("NUnit", re.compile(r"using\s+NUnit\.Framework\s*;|\[TestFixture\]")),
+    ("MSTest", re.compile(r"using\s+Microsoft\.VisualStudio\.TestTools\.UnitTesting\s*;|\[TestClass\]")),
+    ("pytest", re.compile(r"^\s*(?:import|from)\s+pytest\b", re.M)),
+    ("unittest", re.compile(r"import\s+unittest\b|\(unittest\.TestCase\)")),
+    ("Jest + React Testing Library", re.compile(r"@testing-library/react")),
+    ("Jest", re.compile(r"from\s+['\"]@jest|\bjest\.(mock|fn)\(|\bdescribe\(.*\bit\(", re.S)),
+    ("JUnit 5", re.compile(r"org\.junit\.jupiter")),
+    ("JUnit 4", re.compile(r"import\s+org\.junit\.Test\b|import\s+org\.junit\.Assert\b")),
+    ("RSpec", re.compile(r"RSpec\.describe|require\s+['\"]rspec['\"]")),
+    ("Go testing", re.compile(r'"testing"[\s\S]{0,200}func\s+Test\w+\(\w+\s*\*testing\.T\)')),
+    ("Rust #[test]", re.compile(r"#\[test\]|#\[cfg\(test\)\]")),
+    ("PHPUnit", re.compile(r"PHPUnit\\Framework\\TestCase")),
+]
+
+
+def find_existing_test_files(repo_name: str) -> list[dict]:
+    """
+    Existing test files for a repo, found by convention: living under a path
+    segment named "Test"/"Tests" (nopCommerce's own src/Tests/, for example),
+    or having "test" in the filename. Returns candidates ranked with
+    folder+filename matches first. Degrades to [] if Postgres is unreachable.
+    """
+    try:
+        conn = get_connection()
+    except Exception:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT file_path, language FROM files WHERE repository_name = %s",
+                       (repo_name,))
+            rows = cur.fetchall()
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+    candidates = []
+    for file_path, language in rows:
+        in_test_dir = bool(TEST_DIR_RE.search(file_path))
+        name_has_test = _looks_like_test_file(Path(file_path).stem)
+        if in_test_dir or name_has_test:
+            candidates.append({"file_path": file_path, "language": language,
+                              "score": 2 if (in_test_dir and name_has_test) else 1})
+    candidates.sort(key=lambda c: -c["score"])
+    return candidates
+
+
+def detect_framework_from_existing_tests(repo_name: str, repo_path: Path, rel_file: str = None,
+                                         max_files_checked: int = 8):
+    """
+    Looks at the repo's OWN existing test files and sniffs which framework is
+    actually in use from their content, rather than guessing from the
+    target's extension. Returns (framework, example_file_path, example_source)
+    — example_source is that file's full content, meant to be shown to the
+    LLM as a concrete style reference (naming, mocking, assertion style).
+    All three are None if nothing could be determined; the caller falls back
+    to infer_framework()'s extension guess in that case.
+    """
+    if repo_path is None:
+        return None, None, None
+
+    candidates = find_existing_test_files(repo_name)
+    if rel_file:
+        # Prefer test files in the SAME language as the target — a repo can
+        # mix languages (e.g. a C# backend with JS frontend tests).
+        ext = Path(rel_file).suffix.lower()
+        same_ext = [c for c in candidates if Path(c["file_path"]).suffix.lower() == ext]
+        if same_ext:
+            candidates = same_ext
+
+    checked = 0
+    for c in candidates:
+        if checked >= max_files_checked:
+            break
+        # file_path is repo-name-prefixed; repo_path already ends in the repo
+        # name, so join against its PARENT — same convention used throughout.
+        full_path = repo_path.parent / c["file_path"]
+        try:
+            text = full_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        checked += 1
+        for name, pattern in FRAMEWORK_SIGNATURES:
+            if pattern.search(text):
+                return name, c["file_path"], text
+    return None, None, None
+
+
 # ── Source + context readers ──────────────────────────────────────────────────
 
 def read_source(repo_path: Path, rel_file: str) -> str:
-    full = repo_path / rel_file
+    # rel_file is repo-name-prefixed (e.g. "nopCommerce/src/.../Foo.cs") —
+    # matches Postgres's files.file_path and what find_top_file_for_prompt
+    # returns from ChromaDB metadata. repo_path already ends in the repo
+    # name, so join against its PARENT to avoid doubling it — same
+    # convention as everywhere else in this project (diagram.py,
+    # file_dependencies.py, extract_business_rules.py, system_report.py).
+    full = repo_path.parent / rel_file
     if not full.is_file():
         sys.exit(f"Error: file not found on disk: {full}")
     return full.read_text(encoding="utf-8", errors="ignore")
@@ -143,9 +273,199 @@ def extract_function(source: str, func_name: str, language_ext: str) -> str:
     return source
 
 
+# ── Dependency signature grounding ─────────────────────────────────────────────
+#
+# The compiler errors this was built to prevent were never a "the LLM is bad
+# at C#" problem — they're a "the LLM was never shown the real signature"
+# problem. Nothing in the old prompt gave it the actual method signatures for
+# whatever it was about to mock, so for anything with more than a couple of
+# parameters it just invented a plausible-looking argument list (wrong count,
+# wrong order, wrong types). kb.relationaldb.metadata.py now indexes real
+# classes/methods (not just counts) into PostgreSQL, so this pulls the exact
+# signatures for whatever the target's constructor actually injects and
+# grounds the prompt in them.
+
+CTOR_RE = re.compile(r"public\s+\w+\s*\(([^)]*)\)", re.S)
+
+
+def extract_constructor_types(source: str) -> list[str]:
+    """
+    Best-effort: the TYPE names from what looks like the primary constructor
+    in `source` (matches typical DI-style 'public Foo(TypeA a, TypeB b)').
+    These are exactly what a generated test will need to Mock<T> and Setup(...),
+    so looking their real signatures up by name is far more targeted than
+    walking the file-level dependency graph.
+    """
+    m = CTOR_RE.search(source)
+    if not m:
+        return []
+    params = m.group(1)
+    # Strip generic type args first (IAttributeParser<A, B> -> IAttributeParser)
+    # so a generic's internal commas don't fragment the parameter list.
+    depth, cleaned = 0, []
+    for ch in params:
+        if ch == "<":
+            depth += 1
+            continue
+        if ch == ">":
+            depth -= 1
+            continue
+        if depth == 0:
+            cleaned.append(ch)
+    types = re.findall(r"([A-Z]\w*)\s+\w+\s*(?:,|$)", "".join(cleaned))
+    return list(dict.fromkeys(types))  # dedupe, keep first-seen order
+
+
+def get_signatures_by_name(type_names: list[str], repo_name: str, max_methods: int = 25) -> dict:
+    """
+    Real method signatures for classes/interfaces named in `type_names`,
+    scoped to one repo, straight from PostgreSQL. Returns
+    { file_path: [{"class": name, "methods": ["Foo(a, b): ret", ...]}] }.
+    Degrades to {} (not an exception) if Postgres is unreachable or nothing's
+    indexed yet — the caller falls back to the old deps-only context in that
+    case, same convention kb/diagram.py uses for its own DB-first lookups.
+    """
+    if not type_names:
+        return {}
+    try:
+        conn = get_connection()
+    except Exception:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT f.file_path, c.name, c.id
+                FROM classes c JOIN files f ON f.id = c.file_id
+                WHERE f.repository_name = %s AND c.name = ANY(%s)
+                ORDER BY f.file_path, c.name
+            """, (repo_name, type_names))
+            class_rows = cur.fetchall()
+            if not class_rows:
+                return {}
+
+            class_ids = [r[2] for r in class_rows]
+            cur.execute("""
+                SELECT class_id, name, params, return_type, is_async
+                FROM functions WHERE class_id = ANY(%s) ORDER BY id
+            """, (class_ids,))
+            method_rows = cur.fetchall()
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+    methods_by_class = defaultdict(list)
+    for class_id, name, params, ret, is_async in method_rows:
+        sig = f"{name}({', '.join(params or [])})"
+        if ret:
+            sig += f": {ret}"
+        methods_by_class[class_id].append(("async " if is_async else "") + sig)
+
+    result = defaultdict(list)
+    for file_path, cname, cid in class_rows:
+        methods = methods_by_class.get(cid, [])[:max_methods]
+        if methods:   # skip entries with nothing indexed — no point listing an empty class
+            result[file_path].append({"class": cname, "methods": methods})
+    return dict(result)
+
+
+def format_signatures_block(sig_map: dict) -> str:
+    if not sig_map:
+        return ("(none indexed — run `python3 -m kb.relationaldb.metadata <repo path>` on this "
+                "repo to enable exact-signature grounding; until then, mocked calls are a guess)")
+    lines = []
+    for file_path, classes in sig_map.items():
+        for c in classes:
+            lines.append(f"{c['class']} ({file_path}):")
+            for m in c["methods"]:
+                lines.append(f"    {m}")
+    return "\n".join(lines)
+
+
+def read_dependency_sources(type_names: list[str], repo_name: str, repo_path: Path,
+                            max_chars: int = 4000) -> dict:
+    """
+    The actual on-disk source for each constructor-injected dependency type —
+    found in PostgreSQL, read from disk. This is the strongest grounding
+    available: the model sees the REAL using directives, REAL namespace, and
+    REAL signatures verbatim, rather than a synthesized summary. Added
+    specifically because signatures alone still left the model guessing at
+    `using` statements for referenced types, producing CS0234/CS0246 errors.
+
+    Truncated per file (nopCommerce service interfaces can be large) — this
+    trades completeness for staying within a sane prompt size when a
+    constructor injects a couple dozen dependencies. Degrades to {} (not an
+    exception) if Postgres is unreachable, nothing's indexed, or repo_path is
+    unavailable — the caller falls back to the signature-only block already
+    added above.
+    """
+    if not type_names or repo_path is None:
+        return {}
+    try:
+        conn = get_connection()
+    except Exception:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT f.file_path
+                FROM classes c JOIN files f ON f.id = c.file_id
+                WHERE f.repository_name = %s AND c.name = ANY(%s)
+            """, (repo_name, type_names))
+            file_paths = [r[0] for r in cur.fetchall()]
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+    sources = {}
+    for fp in file_paths:
+        # fp is repo-name-prefixed (e.g. "nopCommerce/src/.../IOrderService.cs");
+        # repo_path already ends in the repo name, so join against its PARENT
+        # to avoid doubling it — same convention used throughout this project.
+        full_path = repo_path.parent / fp
+        try:
+            text = full_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if len(text) > max_chars:
+            omitted = len(text) - max_chars
+            text = text[:max_chars] + f"\n// ... truncated, {omitted} more characters"
+        sources[fp] = text
+    return sources
+
+
+def format_dependency_sources_block(sources: dict) -> str:
+    if not sources:
+        return "(none available — either nothing indexed yet, or the repo isn't on disk at --repo-path)"
+    return "\n\n".join(f"// ── {fp} ──\n{text}" for fp, text in sources.items())
+
+
+def load_manual_example(path_str: str):
+    """
+    Reads a user-specified existing test file from disk — via --example-file
+    on the CLI, or the TUI's Tests tab "Example test file" field — instead of
+    (or overriding) the automatic search. Detects its framework with the same
+    signatures auto-detection uses. Returns (framework_or_None, path_str,
+    source_or_None); framework/source are None if the file couldn't be read,
+    but path_str is always returned so the caller can report what was tried.
+    """
+    p = Path(path_str).expanduser()
+    try:
+        text = p.read_text(encoding="utf-8", errors="ignore")
+    except OSError as e:
+        print(f"  ⚠ Could not read --example-file '{path_str}': {e}")
+        return None, str(p), None
+
+    for name, pattern in FRAMEWORK_SIGNATURES:
+        if pattern.search(text):
+            return name, str(p), text
+    return None, str(p), text  # readable, but no known framework signature matched
+
+
 # ── Related context (shared with grab_context) ────────────────────────────────
 
-def gather_related_context(repo_name, rel_file, target_source, top_n=3):
+def gather_related_context(repo_name, rel_file, target_source, repo_path=None, top_n=3):
     """
     Builds the same kind of multi-store context grab_context produces, focused
     on the target file:
@@ -168,6 +488,17 @@ def gather_related_context(repo_name, rel_file, target_source, top_n=3):
         for r in rules[:4]:  # cap so the prompt stays focused
             dep_lines.append(f"    · {r}")
     deps_block = "\n".join(dep_lines) if dep_lines else "(none recorded)"
+
+    # 1b. Real signatures for whatever the target's constructor actually
+    #     injects — looked up by NAME, not via the file dependency graph
+    #     (which is only best-effort for C#), so this works even when a
+    #     dependency edge didn't resolve cleanly.
+    injected_types = extract_constructor_types(target_source)
+    sig_map = get_signatures_by_name(injected_types, repo_name)
+    signatures_block = format_signatures_block(sig_map)
+
+    dep_sources = read_dependency_sources(injected_types, repo_name, repo_path)
+    dep_sources_block = format_dependency_sources_block(dep_sources)
 
     # 2. Repo-level key points — what the whole system does
     key_points = load_key_points_from_db(repo_name)
@@ -192,6 +523,8 @@ def gather_related_context(repo_name, rel_file, target_source, top_n=3):
 
     return {
         "deps_block": deps_block,
+        "signatures_block": signatures_block,
+        "dep_sources_block": dep_sources_block,
         "key_points_block": kp_block,
         "related_block": related_block,
         "dep_count": len(dep_files),
@@ -200,6 +533,81 @@ def gather_related_context(repo_name, rel_file, target_source, top_n=3):
 
 
 # ── Prompt + LLM ──────────────────────────────────────────────────────────────
+
+# What "mark this expected to fail" actually means varies a lot by framework,
+# and most of them have NOTHING like pytest's xfail. The previous version of
+# this prompt only gave a pytest example and left the model to improvise for
+# everything else — for xUnit it improvised [Fact(Skip = "...")], which reads
+# as "expected to fail" but is really "never run this test again." A skipped
+# test gives zero signal when the underlying bug is eventually fixed. Only
+# pytest and RSpec have a genuine xfail (runs, expected to fail, and — with
+# strict mode / by default respectively — FAILS the suite if it unexpectedly
+# passes). Jest 29+'s test.failing is the same idea. Everything else gets the
+# same fallback: write the test to assert the CORRECT behavior so it genuinely
+# fails right now, tag it instead of skipping it, and keep it running.
+XFAIL_MECHANISM = {
+    "pytest": (
+        'Mark it with @pytest.mark.xfail(reason="...", strict=True) directly above the test. '
+        'strict=True makes an unexpected PASS fail the suite too, so a real fix is never missed.'
+    ),
+    "Jest": (
+        'Use test.failing("name", async () => { ... }) (Jest 29+) instead of test(...). '
+        'test.failing REQUIRES the test to fail — Jest itself flags it as broken once the '
+        'underlying bug is fixed and the test starts passing, so nothing goes unnoticed.'
+    ),
+    "Jest + React Testing Library": (
+        'Use test.failing("name", async () => { ... }) (Jest 29+) instead of test(...). '
+        'test.failing REQUIRES the test to fail — Jest itself flags it as broken once the '
+        'underlying bug is fixed and the test starts passing, so nothing goes unnoticed.'
+    ),
+    "JUnit 5": (
+        'JUnit has no real xfail. Do NOT use @Disabled — it hides the test forever, even after '
+        'the bug is fixed. Write the test to assert the CORRECT behavior (so it genuinely fails '
+        'right now) and tag it @Tag("known-issue") instead. The required CI gate should exclude '
+        'that tag; a separate non-blocking job runs only that tag, so a fix becomes visible the '
+        "moment the test starts passing."
+    ),
+    "xUnit": (
+        'xUnit has no real xfail. Do NOT use [Fact(Skip = "...")] — it hides the test forever, '
+        'even after the bug is fixed. Write the test to assert the CORRECT behavior (so it '
+        'genuinely fails right now) and use a plain [Fact] with [Trait("Category", "KnownIssue")] '
+        'instead — no Skip. The required CI gate should run with '
+        '--filter "Category!=KnownIssue"; a separate non-blocking job runs '
+        '--filter "Category=KnownIssue", so a fix becomes visible the moment the test starts passing.'
+    ),
+    "Go testing": (
+        'Go has no xfail, and t.Skip() has the same problem as [Fact(Skip=...)] — it hides the '
+        'test forever. Write the test to assert the CORRECT behavior (so it genuinely fails now), '
+        'name it TestKnownIssue_... instead of Test..., and add a "// KNOWN ISSUE: reason" comment '
+        'above it, so it can be excluded from the required run with -run "^Test_" while remaining '
+        'discoverable and runnable on its own.'
+    ),
+    "RSpec": (
+        'Use pending("reason") as the first line inside the test (or '
+        '`it "...", pending: "reason" do ... end`). This is a real xfail: RSpec runs the test, '
+        'reports it as pending (not a failure) if it fails as expected, and — critically — FAILS '
+        'the suite if a pending test unexpectedly passes, so a fix is never silently missed.'
+    ),
+    "Rust #[test]": (
+        'Rust has no xfail. Do NOT use #[ignore] for this — it hides the test forever unless '
+        'someone remembers `cargo test -- --ignored`. Write the test to assert the CORRECT '
+        'behavior (so it genuinely fails now) and put a "// KNOWN ISSUE: reason" comment directly '
+        'above it, so it shows up in source and in CI output when it fails.'
+    ),
+    "PHPUnit": (
+        "PHPUnit has no real xfail — do NOT use markTestSkipped() or markTestIncomplete(), both "
+        "hide the test forever. Write the test to assert the CORRECT behavior (so it genuinely "
+        "fails now) and add #[Group('known-issue')] above it. The required CI gate should run "
+        "--exclude-group known-issue; a separate non-blocking job runs --group known-issue, so a "
+        "fix becomes visible the moment the test starts passing."
+    ),
+}
+DEFAULT_XFAIL_MECHANISM = (
+    "This language/framework has no known xfail mechanism. Write the test to assert the CORRECT "
+    'behavior (so it genuinely fails right now) and add a clear "// KNOWN ISSUE: reason" comment '
+    "(or that language's equivalent) directly above it, rather than skipping or disabling it — a "
+    "skipped test gives no signal at all when the underlying bug is eventually fixed."
+)
 
 TEST_SYSTEM = """You are a senior test engineer who specializes in finding bugs.
 You write thorough, idiomatic unit tests whose goal is to EXPOSE WEAKNESSES:
@@ -210,9 +618,16 @@ You write two categories of tests:
   1. Tests that PASS against the current code (documenting correct behavior).
   2. Tests that PROBE suspected weaknesses. When you believe the current code
      would fail or behave wrongly for an input, still write the test asserting
-     the CORRECT behavior, and mark it as expected-to-fail using the framework's
-     mechanism (for pytest: @pytest.mark.xfail(reason="...")), with a reason that
-     names the weakness. This keeps the suite green while documenting the gap.
+     the CORRECT behavior — it should genuinely fail right now — and mark it
+     as expected-to-fail using THIS framework's specific mechanism:
+
+     {xfail_mechanism}
+
+     Never use a plain skip/disable mechanism for this (Skip, @Disabled,
+     test.skip, markTestSkipped, #[ignore], etc.) unless that IS the
+     mechanism named above — skipping removes the test from the run
+     entirely, so it gives no signal at all when the bug is eventually fixed.
+     The test must actually execute.
 
 You only reference APIs that exist in the given source — you never invent them."""
 
@@ -232,6 +647,20 @@ FILE: {file}
     to understand the contracts this file relies on) ---
 {deps}
 
+--- REAL METHOD SIGNATURES FOR THOSE DEPENDENCIES (from the indexed source —
+    use these for any Setup(...)/Verify(...)/callback on a mock; if a method
+    you need isn't listed here, it wasn't indexed — do not invent its
+    signature, and prefer It.IsAny<T>() only for parameters shown below) ---
+{signatures}
+
+--- ACTUAL SOURCE OF THOSE DEPENDENCIES, VERBATIM FROM DISK (ground truth for
+    `using`/import statements and namespaces — copy them from here rather
+    than guessing; some files may be truncated if very large) ---
+{dep_sources}
+
+--- EXISTING TEST FILE FROM THIS REPO, FOR STYLE ---
+{example}
+
 --- REPOSITORY KEY POINTS (overall system purpose, for context) ---
 {key_points}
 
@@ -240,6 +669,16 @@ FILE: {file}
 
 Requirements:
 - Use {framework} idioms and conventions.
+- If EXISTING TEST FILE FROM THIS REPO is present above (not the "none found"
+  placeholder), match its conventions: test naming pattern, mocking library
+  and setup style, assertion style, and file/class structure. Consistency
+  with the repo's own existing tests matters more than any "ideal" pattern
+  you might otherwise prefer. This INCLUDES using the same test framework as
+  that example (e.g. if it uses NUnit, use NUnit — not xUnit or MSTest), and
+  you MUST include that framework's own using/import statement (e.g.
+  `using NUnit.Framework;` for NUnit, `using Xunit;` for xUnit, `import
+  pytest` for pytest) — using a framework's attributes/decorators without
+  importing the framework itself doesn't compile.
 - Cover happy paths, then aggressively probe weaknesses: malformed/empty/None
   inputs, boundary and overflow values, wrong types, division-by-zero, unhandled
   exceptions, and any business rule the code may NOT actually enforce.
@@ -249,6 +688,20 @@ Requirements:
 - For every test that probes a suspected weakness, mark it expected-to-fail using
   the framework's mechanism and give a reason naming the weakness.
 - Use the dependencies' rules to mock collaborators faithfully.
+- Every mocked call (Setup, Verify, It.Is<T>, callback parameter lists) on a type
+  listed in REAL METHOD SIGNATURES must match that signature EXACTLY — same
+  parameter count, order, and types. Never invent, reorder, add, or drop a
+  parameter, and never guess a signature for a method that isn't listed there.
+- Every `using`/import statement in your output for a type shown in ACTUAL SOURCE
+  OF THOSE DEPENDENCIES must match the namespace that file actually declares —
+  copy it, don't reconstruct it from the file path or the type's name.
+- When calling a constructor or method with many parameters, pass arguments
+  POSITIONALLY, in the exact order shown in the source — do not switch to
+  named-argument syntax (e.g. C#'s `paramName: value`) partway through a call
+  as a way to "keep track" of a long argument list, and never invent a label
+  that isn't the real declared parameter name. If you use named arguments at
+  all, use them for every argument in that call, spelled exactly as declared,
+  and never reuse or repeat a label.
 - Mock external dependencies where appropriate (DB, network, filesystem).
 - Include necessary imports and any fixtures/setup.
 - Output ONLY the test file contents — no prose, no markdown fences."""
@@ -425,40 +878,85 @@ def resolve_repo(conn, requested):
 def generate_for_target(client, repo_name, repo_path, rel_file, rules_by_file,
                         function=None, related=3, analyze=True,
                         to_stdout=False, out_dir="generated_tests",
-                        reports_dir="weakness", report_format="pdf"):
+                        reports_dir="weakness", report_format="pdf",
+                        example_file_override=None):
     """
     Generates tests (and optionally a weaknesses report) for one target —
     either a whole file or a single function within it. Reusable so the same
     logic runs for the top file AND for each imported function.
+
+    example_file_override, when given, is a path to an existing test file
+    the user has manually pointed at (CLI --example-file, or the TUI's Tests
+    tab "Example test file" field) — it's used INSTEAD OF the automatic
+    search in detect_framework_from_existing_tests, for cases where the
+    right example isn't findable by convention (or the user just wants to
+    be explicit about it).
     """
-    source = read_source(repo_path, rel_file)
+    full_source = read_source(repo_path, rel_file)
     if function:
-        source = extract_function(source, function, Path(rel_file).suffix.lower())
+        source = extract_function(full_source, function, Path(rel_file).suffix.lower())
         target_desc = f"function '{function}' in {rel_file}"
     else:
+        source = full_source
         target_desc = f"file {rel_file}"
 
     framework, _ = infer_framework(rel_file)
+    if example_file_override:
+        manual_framework, example_file, example_source = load_manual_example(example_file_override)
+        if manual_framework:
+            framework = manual_framework
+            framework_source = f"manually attached: {example_file}"
+        elif example_source:
+            framework_source = (f"extension guess (attached {example_file} didn't match a known "
+                               f"framework signature, but is still used as a style example)")
+        else:
+            framework_source = f"extension guess (attached file unreadable: {example_file})"
+    else:
+        detected_framework, example_file, example_source = detect_framework_from_existing_tests(
+            repo_name, repo_path, rel_file=rel_file)
+        framework_source = "extension guess"
+        if detected_framework:
+            framework = detected_framework
+            framework_source = f"detected from {example_file}"
     file_rules = rules_by_file.get(rel_file, [])
     rules_block = "\n".join(f"- {r}" for r in file_rules) if file_rules else "(none recorded)"
-    ctx = gather_related_context(repo_name, rel_file, source, top_n=related)
+    # Always ground signatures from the FULL file, not the (possibly
+    # function-truncated) `source` above — a single targeted method still
+    # needs its class's constructor-injected collaborators mocked correctly.
+    ctx = gather_related_context(repo_name, rel_file, full_source, repo_path=repo_path, top_n=related)
 
     print(f"\n  ── Target: {target_desc} ──")
-    print(f"     Framework   : {framework}")
+    print(f"     Framework   : {framework} ({framework_source})")
     print(f"     File rules  : {len(file_rules)}")
     print(f"     Dependencies: {ctx['dep_count']}")
     print(f"     Generating tests...")
+
+    if example_source:
+        # A style example, not full grounding — cap it the same way
+        # dependency sources are capped.
+        capped = example_source if len(example_source) <= 6000 else \
+            example_source[:6000] + f"\n// ... truncated, {len(example_source) - 6000} more characters"
+        example_block = (f"// ── {example_file} (an existing test already in this repo — match "
+                         f"its naming, structure, mocking style, and assertion style) ──\n{capped}")
+    else:
+        example_block = "(no existing test file found in this repo to use as a style example)"
 
     prompt = TEST_PROMPT.format(
         framework=framework, target_desc=target_desc,
         repo=repo_name, file=rel_file,
         source=source, rules=rules_block,
-        deps=ctx["deps_block"], key_points=ctx["key_points_block"],
+        deps=ctx["deps_block"], signatures=ctx["signatures_block"],
+        dep_sources=ctx["dep_sources_block"],
+        example=example_block,
+        key_points=ctx["key_points_block"],
         related=ctx["related_block"],
+    )
+    system_message = TEST_SYSTEM.format(
+        xfail_mechanism=XFAIL_MECHANISM.get(framework, DEFAULT_XFAIL_MECHANISM)
     )
     resp = client.chat.completions.create(
         model=MODEL,
-        messages=[{"role": "system", "content": TEST_SYSTEM},
+        messages=[{"role": "system", "content": system_message},
                   {"role": "user", "content": prompt}],
     )
     test_code = strip_fences(resp.choices[0].message.content)
@@ -523,10 +1021,14 @@ def main():
     parser = argparse.ArgumentParser(description="Generate unit tests from the Groundwork KB")
     parser.add_argument("--repo", default=None, help="Repository name")
     parser.add_argument("--file", default=None,
-                        help="Target file (relative path within the repo)")
+                        help="Target file, repo-name-prefixed (e.g. flask/src/flask/app.py) — "
+                             "matches what's stored in PostgreSQL/Kùzu")
     parser.add_argument("--prompt", default=None,
                         help="Instead of --file: find the file most associated with this prompt")
     parser.add_argument("--function", default=None, help="Optional: a single function/method to target")
+    parser.add_argument("--example-file", default=None,
+                        help="Path to an existing test file on disk to use as a style/framework "
+                             "reference, overriding the automatic search for one")
     parser.add_argument("--follow-imports", action="store_true",
                         help="Also test functions this file imports from repo dependencies")
     parser.add_argument("--repo-path", default=None,
@@ -585,6 +1087,7 @@ def main():
         function=args.function, related=args.related,
         analyze=not args.no_analyze, to_stdout=args.to_stdout, out_dir=args.out,
         reports_dir=args.reports_dir, report_format=args.report_format,
+        example_file_override=args.example_file,
     )
 
     # 2. Optionally follow imports: test functions imported from repo dependencies
@@ -600,6 +1103,7 @@ def main():
                         function=func_name, related=args.related,
                         analyze=not args.no_analyze, to_stdout=args.to_stdout, out_dir=args.out,
                         reports_dir=args.reports_dir, report_format=args.report_format,
+                        example_file_override=args.example_file,
                     )
                 except SystemExit as e:
                     print(f"     (skipped {func_name} in {dep_file}: {e})")

@@ -21,3 +21,4 @@ kuzu_db/*
 diagrams/*
 weakness/*
 reports/*
+sql_server.sh

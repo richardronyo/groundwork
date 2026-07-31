@@ -20,6 +20,12 @@ At repository scale a file-level graph is unreadable — nopCommerce has ~3,600
 C# files. Every view therefore aggregates to MODULE level (a configurable path
 depth) and caps how many nodes are drawn, keeping the busiest ones.
 
+The four main figures are unchanged. The drill-down APPENDIX lost its
+per-capability (KP) detail image — diagram.py no longer generates keypoint
+diagrams — and its per-function detail was swapped for a class detail (shows
+the classes defined in the file that owns the most widely-shared function),
+since diagram.py no longer generates function diagrams either.
+
 Run from the PROJECT ROOT.
 
 Usage:
@@ -47,29 +53,21 @@ import networkx as nx
 
 from dotenv import load_dotenv
 
-# Build on kb/diagram.py rather than duplicating it. That module already owns:
-#   - multi-language source scanning (SCANNABLE, _strip_comments, _scan_regex,
-#     _iter_source_files, scan_function)
-#   - store lookups (collection_name_for, resolve_repo_path, _get_metrics,
-#     _get_key_point_text)
-#   - the Mermaid diagram generators used for the drill-down appendix
+# Build on kb/diagram.py rather than duplicating it, where it still overlaps.
+# NOTE: diagram.py was rebuilt to cover only two diagram types (deps, class);
+# it no longer has function/keypoint diagram generators, a ChromaDB collection
+# helper, or the old scan_function/_scan_regex/_iter_source_files primitives.
+# Everything below that used to come from there is now either reimplemented
+# locally (collection_name_for) or was a dead import to begin with — the four
+# main report figures were already self-contained; only the appendix's
+# per-function and per-capability drill-down images depended on kb.diagram,
+# and those are adjusted below (see build_appendix_images).
 from kb.diagram import (
-    SCANNABLE,
-    _iter_source_files,
+    LANGUAGE_BY_EXT as SCANNABLE,
     _strip_comments,
-    _scan_regex,
-    _scan_python,
-    scan_function,
-    collection_name_for,
-    resolve_repo_path,
-    _get_key_point_text,
     short,
-    diagram_deps,
-    diagram_function,
-    diagram_keypoint,
     image_deps,
-    image_function,
-    image_keypoint,
+    image_class,
 )
 
 load_dotenv()
@@ -84,17 +82,36 @@ C_MUTED   = "#9aa5b1"
 C_EDGE    = "#c7cdd4"
 
 
+def collection_name_for(repo_name: str) -> str:
+    """ChromaDB collection naming convention — used to live in kb.diagram;
+    reimplemented here since diagram.py no longer touches ChromaDB at all."""
+    safe = "".join(c if c.isalnum() else "_" for c in (repo_name or "").lower())
+    return f"groundwork_{safe}"
+
+
 # ── Data access ───────────────────────────────────────────────────────────────
 
 def module_of(path: str, depth: int = 2) -> str:
     """
-    The module a file belongs to: its first `depth` path segments.
-    'Libraries/Nop.Services/Catalog/ProductService.cs' -> 'Libraries/Nop.Services'
+    The module a file belongs to: its first `depth` path segments AFTER the
+    repo name.
+
+    Every relative path in the knowledge base is now "<repo>/...", so
+    path.parts[0] is always the repo name, not part of the module structure —
+    without stripping it, depth=2 would put every file under "<repo>/src" in
+    the SAME module regardless of subdirectory, collapsing cross-module
+    figures to nothing.
+
+    'nopCommerce/src/Libraries/Nop.Services/Catalog/ProductService.cs' (depth=2)
+      -> 'src/Libraries'
     """
     parts = Path(path).parts
     if len(parts) <= 1:
         return "(root)"
-    return "/".join(parts[:min(depth, len(parts) - 1)])
+    body = parts[1:]                       # drop the repo-name segment
+    if len(body) <= 1:
+        return "(root)"
+    return "/".join(body[:min(depth, len(body) - 1)])
 
 
 def fetch_edges(repo: str):
@@ -217,12 +234,12 @@ def fetch_repo_metadata(repo: str, repo_path: Path) -> dict:
     return metadata
 
 
-# ── Function scanning (reuses the diagrams module) ─────────────────────────────
+# ── Function scanning (repo-wide inventory; independent of kb.diagram) ────────
 
 # Definition patterns per language. The CALL-site scanning and comment/string
-# stripping are reused from kb.diagram — only "find every definition" is new
-# here, since diagram.scan_function looks for ONE named function while a system
-# report needs the whole inventory.
+# stripping reuse kb.diagram's SCANNABLE-equivalent (LANGUAGE_BY_EXT) and
+# _strip_comments — only "find every definition" is new here, since a system
+# report needs the whole inventory rather than one named function.
 DEF_PATTERNS = {
     ".py":  [r"^\s*(?:async\s+)?def\s+(\w+)\s*\("],
     ".cs":  [r"(?:public|private|protected|internal)\s+"
@@ -239,9 +256,9 @@ def scan_repo_functions(repo_path: Path, repo: str, files, max_files: int = 600)
     """
     Repo-wide function inventory: {name: {"defs": [paths], "calls": {path: n}}}.
 
-    Uses kb.diagram's SCANNABLE table and _strip_comments so the language rules
-    stay in one place. Scans the largest files first and caps the total — a full
-    pass over 3,600 C# files is slow and the long tail adds little to a
+    Uses kb.diagram's SCANNABLE-equivalent and _strip_comments so the language
+    rules stay in one place. Scans the largest files first and caps the total —
+    a full pass over 3,600 C# files is slow and the long tail adds little to a
     system-level view.
     """
     ranked = sorted(files, key=lambda f: -f.get("lines", 0))[:max_files]
@@ -254,7 +271,11 @@ def scan_repo_functions(repo_path: Path, repo: str, files, max_files: int = 600)
         ext = Path(rel).suffix.lower()
         if ext not in SCANNABLE or ext not in DEF_PATTERNS:
             continue
-        full = repo_path / rel
+        # `rel` starts with the repo name (e.g. "flask/src/flask/app.py");
+        # repo_path already ends in the repo name, so join against its PARENT
+        # to avoid doubling it — same convention as diagram.py and
+        # file_dependencies.py/extract_business_rules.py.
+        full = repo_path.parent / rel
         if not full.is_file():
             continue
         try:
@@ -636,23 +657,38 @@ def fig_module_responsibility(repo, files, func_index, depth, max_mods, outdir):
 # ── Drill-down appendix (uses kb.diagram's image generators) ────────────────
 
 def build_appendix_images(repo, repo_path, edges, findings, func_index, key_points,
-                          imgdir, max_items=6):
+                          imgdir, module_depth=2, max_items=6):
     """
     Generate actual PNG images for the drill-down details using diagram.py's
     image_* functions. Returns [(title, description, image_path)].
+
+    Was three categories (dependency / function / capability detail) when
+    diagram.py had function and keypoint diagram generators. It doesn't
+    anymore, so:
+      - dependency detail: unchanged, still image_deps. Module membership is
+        checked via module_of(t, module_depth) == hot_mod — a raw string
+        prefix check used to work here because the old module_of() always
+        returned a literal prefix of the full path; it no longer does now
+        that it strips the leading repo-name segment (see module_of).
+      - function detail -> CLASS detail: shows the classes defined in the
+        file that owns the most widely-shared function, via image_class
+      - capability detail: dropped — there's no diagram.py equivalent left
+        for a per-keypoint drill-down. The keypoint LANDSCAPE figure itself
+        (figure 3 in the main report) is unaffected, since it never depended
+        on kb.diagram — only this per-keypoint zoom-in did.
     """
     items = []
 
-    # 1. Hot file in the most depended-upon module
+    # A. Hot file in the most depended-upon module
     mod_findings = findings.get("modules", {})
     if mod_findings.get("most_depended_on") and edges:
         hot_mod = mod_findings["most_depended_on"][0][0]
-        incoming = Counter(t for _, t in edges if t.startswith(hot_mod))
+        incoming = Counter(t for _, t in edges if module_of(t, module_depth) == hot_mod)
         if incoming:
             hot_file, n = incoming.most_common(1)[0]
             try:
                 img_path = imgdir / f"appendix_deps_{Path(hot_file).stem}.png"
-                image_deps(repo, hot_file, img_path, depth=1)
+                image_deps(repo, img_path, hot_file, depth=1)
                 items.append((
                     f"A. Dependency detail — {short(hot_file, 3)}",
                     f"This is the single most imported file inside <b>{hot_mod}</b>, "
@@ -664,47 +700,31 @@ def build_appendix_images(repo, repo_path, edges, findings, func_index, key_poin
             except Exception as e:
                 print(f"    (skipped dependency detail: {e})")
 
-    # 2. Most widely shared functions
+    # B. Classes in the file that owns the most widely shared function
     fn_findings = findings.get("functions", {})
     for name, n_mods, total, home in (fn_findings.get("top_shared") or [])[:2]:
+        defs = func_index.get(name, {}).get("defs") or []
+        if not defs or not repo_path:
+            continue
+        file_label = defs[0]
         try:
-            lang = None
-            defs = func_index.get(name, {}).get("defs") or []
-            if defs:
-                ext = Path(defs[0]).suffix.lower()
-                lang = [SCANNABLE[ext]] if ext in SCANNABLE else None
-            img_path = imgdir / f"appendix_func_{name}.png"
-            image_function(repo, repo_path, name, img_path, 
-                          max_callers=10, languages=lang)
+            # file_label is repo-name-prefixed (e.g. "flask/src/flask/app.py");
+            # repo_path already ends in the repo name, so join against its
+            # PARENT to avoid doubling it — same convention diagram.py uses.
+            file_path = repo_path.parent / file_label
+            img_path = imgdir / f"appendix_class_{Path(file_label).stem}.png"
+            image_class(file_path, file_label, img_path)
             items.append((
-                f"B. Function detail — {name}()",
-                f"Defined in <b>{home}</b> and called from <b>{n_mods} other "
-                f"modules</b> across {total} call sites. Each caller is a behavior "
-                f"contract this function must keep, which is what makes it a "
-                f"high-value test target.",
+                f"B. Class detail — {short(file_label, 3)}",
+                f"<b>{name}()</b> is called from <b>{n_mods} other module(s)</b> "
+                f"across {total} call sites — the highest cross-module reach found "
+                f"in <b>{home}</b>. Below are the classes that file defines; a "
+                f"function this widely relied on is a high-value test target "
+                f"regardless of which class it lives on.",
                 img_path,
             ))
         except Exception as e:
-            print(f"    (skipped function detail for {name}: {e})")
-
-    # 3. Each capability
-    kp_findings = findings.get("keypoints", {})
-    owners = kp_findings.get("owners") or {}
-    for k in sorted(owners)[:max(0, max_items - len(items))]:
-        mod, score = owners[k]
-        text = key_points[k] if k < len(key_points) else f"Key point {k}"
-        try:
-            img_path = imgdir / f"appendix_kp{k}.png"
-            image_keypoint(repo, k, img_path, top_n=8)
-            items.append((
-                f"C. Capability detail — KP{k}",
-                f"<i>{text}</i><br/>Strongest in <b>{mod}</b> "
-                f"(mean alignment {score:.2f}). The files below align most closely "
-                f"to this capability and are where its behavior actually lives.",
-                img_path,
-            ))
-        except Exception as e:
-            print(f"    (skipped capability detail KP{k}: {e})")
+            print(f"    (skipped class detail for {name}: {e})")
 
     return items[:max_items]
 
@@ -957,7 +977,8 @@ def main():
     appendix_images = build_appendix_images(
         repo, repo_path or Path('.'), edges,
         {"modules": f1, "functions": f2, "keypoints": f3, "responsibility": f4},
-        func_index, key_points, imgdir, max_items=args.appendix_items,
+        func_index, key_points, imgdir,
+        module_depth=args.module_depth, max_items=args.appendix_items,
     ) if args.appendix_items > 0 else []
     if appendix_images:
         print(f"    {len(appendix_images)} detail diagram(s)")
