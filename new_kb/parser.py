@@ -5,6 +5,9 @@ from tree_sitter import Language, Parser
 from pathlib import Path
 from parser_dicts import EXTENSION_TO_MODULE, FUNCTION_TYPES, CLASS_TYPES, IMPORT_TYPES, INTERFACE_TYPES, COMMENT_TYPES
 
+# ----------------------------------------------------------------------
+# Name extraction helpers (unchanged)
+# ----------------------------------------------------------------------
 def extract_identifier_from_node(node):
     """Recursively find the first child node that is an identifier or name."""
     if node.type in {"identifier", "name"}:
@@ -39,6 +42,9 @@ def get_node_name(node, extension):
     # 4. Fallback: recursively search for any identifier/name node
     return extract_identifier_from_node(node)
 
+# ----------------------------------------------------------------------
+# Import name extraction (unchanged)
+# ----------------------------------------------------------------------
 def extract_import_names(node, extension):
     """
     Extract imported module/package names from an import node.
@@ -73,19 +79,63 @@ def extract_import_names(node, extension):
 
     return names
 
+# ----------------------------------------------------------------------
+# Helpers for async and method detection
+# ----------------------------------------------------------------------
+def is_async_function(node):
+    """
+    Determine if a function node is async.
+    Checks the node's type for 'async' prefix, or looks for an 'async' child token.
+    """
+    # Many grammars use a specific node type like async_function_definition
+    if 'async' in node.type.lower():
+        return True
+
+    # For other languages, scan children for an 'async' token
+    # (Tree-sitter often has a token with type 'async')
+    for child in node.children:
+        if child.type == 'async' or child.text.decode(errors="replace") == 'async':
+            return True
+    return False
+
+def is_method(node, ancestors, class_types):
+    """
+    Returns True if the node is a function that is defined inside a class.
+    """
+    for anc in ancestors:
+        if anc.type in class_types:
+            return True
+    return False
+
+# ----------------------------------------------------------------------
+# Main metric extraction (improved)
+# ----------------------------------------------------------------------
 def extract_file_metrics(root_node, extension, source_bytes):
-    """Traverse the AST and build a comprehensive metrics dictionary."""
+    """
+    Traverse the AST and build a comprehensive metrics dictionary.
+    Returns:
+      - counts for classes, functions (free), methods (inside classes),
+        async_functions, imports (total count), lines, interfaces, comments
+      - lists of function_names, class_names, and imported names
+      - dictionaries of function/class definitions by name
+    """
+    source_text = source_bytes.decode(errors="replace")
+    total_lines = len(source_text.splitlines())
+
     results = {
-        "function_count": 0,
-        "class_count": 0,
+        "classes": 0,
+        "functions": 0,          # top-level (free) functions
+        "methods": 0,            # functions inside classes
+        "async_functions": 0,
         "import_count": 0,
         "interface_count": 0,
         "comment_count": 0,
+        "lines": total_lines,
         "function_names": [],
         "class_names": [],
-        "function_definitions": {},   # name -> source text
-        "class_definitions": {},      # name -> source text (optional)
-        "imports": [],                # list of imported names
+        "function_definitions": {},
+        "class_definitions": {},
+        "imports": [],           # list of imported names (strings)
     }
 
     func_types = set(FUNCTION_TYPES.get(extension, []))
@@ -94,22 +144,35 @@ def extract_file_metrics(root_node, extension, source_bytes):
     interface_types = set(INTERFACE_TYPES.get(extension, []))
     comment_types = set(COMMENT_TYPES.get(extension, []))
 
-    def traverse(node):
-        # Count and record functions
+    def traverse(node, ancestors=None):
+        if ancestors is None:
+            ancestors = []
+
+        # ---- Functions ----
         if node.type in func_types:
-            results["function_count"] += 1
+            is_async = is_async_function(node)
+            is_method_flag = is_method(node, ancestors, class_types)
+
+            if is_method_flag:
+                results["methods"] += 1
+            else:
+                results["functions"] += 1
+
+            if is_async:
+                results["async_functions"] += 1
+
+            # Extract name and store definition
             name = get_node_name(node, extension)
             if name:
                 results["function_names"].append(name)
                 results["function_definitions"][name] = node.text.decode(errors="replace")
             else:
-                # Anonymous function fallback
                 results["function_names"].append("<anonymous>")
                 results["function_definitions"]["<anonymous>"] = node.text.decode(errors="replace")
 
-        # Count and record classes
+        # ---- Classes ----
         if node.type in class_types:
-            results["class_count"] += 1
+            results["classes"] += 1
             name = get_node_name(node, extension)
             if name:
                 results["class_names"].append(name)
@@ -118,24 +181,44 @@ def extract_file_metrics(root_node, extension, source_bytes):
                 results["class_names"].append("<anonymous>")
                 results["class_definitions"]["<anonymous>"] = node.text.decode(errors="replace")
 
-        # Count imports and extract imported names
+        # ---- Imports ----
         if node.type in import_types:
             results["import_count"] += 1
             imported = extract_import_names(node, extension)
             results["imports"].extend(imported)
 
-        # Count interfaces and comments
+        # ---- Interfaces & Comments ----
         if node.type in interface_types:
             results["interface_count"] += 1
         if node.type in comment_types:
             results["comment_count"] += 1
 
+        # Recurse
         for child in node.children:
-            traverse(child)
+            traverse(child, ancestors + [node])
 
     traverse(root_node)
     return results
 
+# ----------------------------------------------------------------------
+# Database‑ready reshape
+# ----------------------------------------------------------------------
+def reshape_for_db(parser_metrics):
+    """
+    Convert parser output to the dict expected by initialize_db.save_file().
+    """
+    return {
+        "classes": parser_metrics["classes"],
+        "functions": parser_metrics["functions"],
+        "methods": parser_metrics["methods"],
+        "async_functions": parser_metrics["async_functions"],
+        "imports": parser_metrics["import_count"],
+        "lines": parser_metrics["lines"],
+    }
+
+# ----------------------------------------------------------------------
+# Existing functions: get_parser, get_tree (unchanged)
+# ----------------------------------------------------------------------
 def get_parser(path: str) -> Parser:
     extension = '.' + path.split('.')[-1]
     if extension not in EXTENSION_TO_MODULE:
@@ -162,6 +245,9 @@ def get_tree(path: str, parser: Parser):
     file_bytes = Path(path).read_bytes()
     return parser.parse(file_bytes)
 
+# ----------------------------------------------------------------------
+# Main: demonstrate usage on a directory
+# ----------------------------------------------------------------------
 if __name__ == '__main__':
     metrics = dict()
     for file in os.listdir('parser_test'):
@@ -175,4 +261,4 @@ if __name__ == '__main__':
         metrics[file] = extract_file_metrics(tree.root_node, extension, source_bytes)
 
     with open(f'parser_test/metrics.json', 'w') as f:
-        json.dump(metrics, f, indent=4) 
+        json.dump(metrics, f, indent=4)

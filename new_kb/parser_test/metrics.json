@@ -1,10 +1,28 @@
 {
+    "metrics.json": {
+        "classes": 0,
+        "functions": 0,
+        "methods": 0,
+        "async_functions": 0,
+        "import_count": 0,
+        "interface_count": 0,
+        "comment_count": 0,
+        "lines": 325,
+        "function_names": [],
+        "class_names": [],
+        "function_definitions": {},
+        "class_definitions": {},
+        "imports": []
+    },
     "config.go": {
-        "function_count": 10,
-        "class_count": 0,
+        "classes": 0,
+        "functions": 10,
+        "methods": 0,
+        "async_functions": 0,
         "import_count": 1,
         "interface_count": 0,
         "comment_count": 4,
+        "lines": 216,
         "function_names": [
             "EditConfig",
             "DisplayAllConfig",
@@ -36,11 +54,14 @@
         ]
     },
     "index.js": {
-        "function_count": 27,
-        "class_count": 1,
+        "classes": 1,
+        "functions": 19,
+        "methods": 8,
+        "async_functions": 7,
         "import_count": 0,
         "interface_count": 0,
         "comment_count": 11,
+        "lines": 414,
         "function_names": [
             "render",
             "getConfig",
@@ -100,11 +121,14 @@
         "imports": []
     },
     "OrderModelFactory.cs": {
-        "function_count": 6,
-        "class_count": 1,
+        "classes": 1,
+        "functions": 0,
+        "methods": 6,
+        "async_functions": 6,
         "import_count": 31,
         "interface_count": 0,
         "comment_count": 102,
+        "lines": 828,
         "function_names": [
             "PrepareOrderItemPictureModelAsync",
             "PrepareCustomerOrderListModelAsync",
@@ -162,11 +186,14 @@
         ]
     },
     "app.py": {
-        "function_count": 40,
-        "class_count": 1,
+        "classes": 1,
+        "functions": 5,
+        "methods": 35,
+        "async_functions": 0,
         "import_count": 63,
         "interface_count": 0,
         "comment_count": 114,
+        "lines": 1625,
         "function_names": [
             "_make_timedelta",
             "remove_ctx",
