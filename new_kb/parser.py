@@ -1,7 +1,9 @@
+import os
+import json
+
 from tree_sitter import Language, Parser
 from pathlib import Path
 from parser_dicts import EXTENSION_TO_MODULE, FUNCTION_TYPES, CLASS_TYPES, IMPORT_TYPES, INTERFACE_TYPES, COMMENT_TYPES
-import os
 
 def extract_identifier_from_node(node):
     """Recursively find the first child node that is an identifier or name."""
@@ -37,6 +39,40 @@ def get_node_name(node, extension):
     # 4. Fallback: recursively search for any identifier/name node
     return extract_identifier_from_node(node)
 
+def extract_import_names(node, extension):
+    """
+    Extract imported module/package names from an import node.
+    Returns a list of strings (e.g., ['os'], ['flask', 'pathlib']).
+    """
+    names = []
+    # Try common field names that hold the module path
+    for field in ['name', 'module', 'path', 'namespace']:
+        field_node = node.child_by_field_name(field)
+        if field_node:
+            # For dotted names, take the full text
+            names.append(field_node.text.decode(errors="replace").strip())
+            return names
+
+    # For languages like C# (using_directive) or Python (import statement),
+    # recursively collect identifier/dotted_name nodes.
+    def collect(n):
+        if n.type in {'identifier', 'name', 'dotted_name', 'qualified_name', 'namespace_name'}:
+            # If it's a dotted name, include the whole text
+            if n.type in {'dotted_name', 'qualified_name', 'namespace_name'}:
+                names.append(n.text.decode(errors="replace").strip())
+            else:
+                names.append(n.text.decode(errors="replace").strip())
+        else:
+            for child in n.children:
+                collect(child)
+    collect(node)
+
+    # If we found nothing, fallback to the entire node text (stripped)
+    if not names:
+        names.append(node.text.decode(errors="replace").strip())
+
+    return names
+
 def extract_file_metrics(root_node, extension, source_bytes):
     """Traverse the AST and build a comprehensive metrics dictionary."""
     results = {
@@ -49,6 +85,7 @@ def extract_file_metrics(root_node, extension, source_bytes):
         "class_names": [],
         "function_definitions": {},   # name -> source text
         "class_definitions": {},      # name -> source text (optional)
+        "imports": [],                # list of imported names
     }
 
     func_types = set(FUNCTION_TYPES.get(extension, []))
@@ -81,9 +118,13 @@ def extract_file_metrics(root_node, extension, source_bytes):
                 results["class_names"].append("<anonymous>")
                 results["class_definitions"]["<anonymous>"] = node.text.decode(errors="replace")
 
-        # Count other syntactic elements
+        # Count imports and extract imported names
         if node.type in import_types:
             results["import_count"] += 1
+            imported = extract_import_names(node, extension)
+            results["imports"].extend(imported)
+
+        # Count interfaces and comments
         if node.type in interface_types:
             results["interface_count"] += 1
         if node.type in comment_types:
@@ -122,25 +163,16 @@ def get_tree(path: str, parser: Parser):
     return parser.parse(file_bytes)
 
 if __name__ == '__main__':
-    for file in os.listdir('parser_samples'):
-        file_path = f'parser_samples/{file}'
+    metrics = dict()
+    for file in os.listdir('parser_test'):
+        file_path = f'parser_test/{file}'
         extension = '.' + file.split('.')[-1]
 
         parser = get_parser(file_path)
         tree = get_tree(file_path, parser)
         source_bytes = Path(file_path).read_bytes()
 
-        metrics = extract_file_metrics(tree.root_node, extension, source_bytes)
+        metrics[file] = extract_file_metrics(tree.root_node, extension, source_bytes)
 
-        # Print or store the metrics
-        print(f"--- {file} ---")
-        print(f"Functions: {metrics['function_count']} -> {metrics['function_names']}")
-        print(f"Classes  : {metrics['class_count']} -> {metrics['class_names']}")
-        print(f"Imports  : {metrics['import_count']}")
-        print(f"Interfaces: {metrics['interface_count']}")
-        print(f"Comments : {metrics['comment_count']}")
-        # Optionally print the first function definition as a sample
-        if metrics['function_definitions']:
-            first_func = next(iter(metrics['function_definitions'].items()))
-            print(f"Sample definition of '{first_func[0]}':\n{first_func[1][:200]}...\n")
-        print()
+    with open(f'parser_test/metrics.json', 'w') as f:
+        json.dump(metrics, f, indent=4) 
