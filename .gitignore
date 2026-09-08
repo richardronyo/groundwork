@@ -23,3 +23,4 @@ weakness/*
 reports/*
 sql_server.sh
 kuzu_db*
+new_kb/parser/parser_*
