@@ -1,5 +1,6 @@
 import os
 import psycopg
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -159,18 +160,18 @@ def init_db():
 
 # ── File metrics ──────────────────────────────────────────────────────────────
 
-def save_file(conn, repository_name, file_path, language, metrics):
-    """Inserts or updates a file record (metrics only). Returns file_id.
-    Note: does NOT touch rules_extracted, so re-scanning won't wipe rule state."""
+def save_file(conn, repository_name, file_path, language, metrics, imports=None):
+    """Inserts or updates a file record (metrics + imports). Returns file_id."""
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO files (
                 repository_name, file_path, language,
                 classes, functions, methods,
-                async_functions, imports, lines
+                async_functions, imports, lines,
+                imports
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (repository_name, file_path)
             DO UPDATE SET
                 language = EXCLUDED.language,
@@ -178,18 +179,18 @@ def save_file(conn, repository_name, file_path, language, metrics):
                 functions = EXCLUDED.functions,
                 methods = EXCLUDED.methods,
                 async_functions = EXCLUDED.async_functions,
-                imports = EXCLUDED.imports,
-                lines = EXCLUDED.lines
+                lines = EXCLUDED.lines,
+                imports = EXCLUDED.imports
             RETURNING id
             """,
             (
                 repository_name, file_path, language,
                 metrics["classes"], metrics["functions"], metrics["methods"],
                 metrics["async_functions"], metrics["imports"], metrics["lines"],
+                json.dumps(imports or [])   # store as JSON array
             ),
         )
         return cur.fetchone()[0]
-
 
 # ── Structural detail (names, not just counts) ────────────────────────────────
 
