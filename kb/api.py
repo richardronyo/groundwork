@@ -85,7 +85,7 @@ def delete_repo(repo: str) -> dict:
         conn.close()
 
     try:
-        from kb.graph.kuzu_store import get_connection as _kz, clear_repo as _kz_clear
+        from new_kb.graph.kuzu_store import get_connection as _kz, clear_repo as _kz_clear
         removed["kuzu_nodes"] = _kz_clear(_kz(), repo)
     except Exception:
         removed["kuzu_nodes"] = 0
@@ -216,14 +216,14 @@ def set_key_points(repo: str, points: list) -> int:
 # ── Dependencies (Kùzu) ───────────────────────────────────────────────────────
 
 def _kuzu():
-    from kb.graph.kuzu_store import get_connection
+    from new_kb.graph.kuzu_store import get_connection
     return get_connection()
 
 
 def get_dependencies(repo: str, path: str) -> list:
     """Files that `path` depends on (outgoing DEPENDS_ON)."""
     try:
-        from kb.graph.kuzu_store import rows_to_dicts
+        from new_kb.graph.kuzu_store import rows_to_dicts
         res = _kuzu().execute("""
             MATCH (f:File {repository_name: $repo, relative: $rel})-[:DEPENDS_ON]->(d:File)
             RETURN d.relative ORDER BY d.relative
@@ -236,7 +236,7 @@ def get_dependencies(repo: str, path: str) -> list:
 def get_dependents(repo: str, path: str) -> list:
     """Files that depend on `path` (incoming DEPENDS_ON)."""
     try:
-        from kb.graph.kuzu_store import rows_to_dicts
+        from new_kb.graph.kuzu_store import rows_to_dicts
         res = _kuzu().execute("""
             MATCH (s:File {repository_name: $repo})-[:DEPENDS_ON]->(f:File {relative: $rel})
             RETURN s.relative ORDER BY s.relative
@@ -251,7 +251,7 @@ def set_dependency(repo: str, source: str, target: str) -> bool:
     Adds a DEPENDS_ON edge. Both files must already exist as nodes (run the
     scan stage first). Returns True if the edge is present afterwards.
     """
-    from kb.graph.kuzu_store import uid_for, scalar
+    from new_kb.graph.kuzu_store import uid_for, scalar
     conn = _kuzu()
     conn.execute("""
         MATCH (a:File {uid: $s}), (b:File {uid: $t})
@@ -262,7 +262,7 @@ def set_dependency(repo: str, source: str, target: str) -> bool:
 
 def _count_edges(repo: str) -> int:
     try:
-        from kb.graph.kuzu_store import scalar
+        from new_kb.graph.kuzu_store import scalar
         return scalar(_kuzu().execute("""
             MATCH (a:File {repository_name: $repo})-[r:DEPENDS_ON]->() RETURN count(r)
         """, {"repo": repo}))

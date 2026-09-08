@@ -422,7 +422,7 @@ def pg_key_points(repo: str) -> tuple[list[str], str | None]:
 
 def kuzu_list_repos() -> tuple[list[str], str | None]:
     try:
-        from kb.graph.kuzu_store import get_connection, rows_to_dicts
+        from new_kb.graph.kuzu_store import get_connection, rows_to_dicts
         res = get_connection().execute("MATCH (f:File) RETURN DISTINCT f.repository_name")
         return sorted(r[0] for r in rows_to_dicts(res)), None
     except Exception as e:
@@ -431,7 +431,7 @@ def kuzu_list_repos() -> tuple[list[str], str | None]:
 
 def kuzu_files(repo: str) -> tuple[list[dict], str | None]:
     try:
-        from kb.graph.kuzu_store import get_connection, rows_to_dicts
+        from new_kb.graph.kuzu_store import get_connection, rows_to_dicts
         res = get_connection().execute("""
             MATCH (f:File {repository_name: $repo})
             RETURN f.relative, f.language, f.size_bytes
@@ -445,7 +445,7 @@ def kuzu_files(repo: str) -> tuple[list[dict], str | None]:
 
 def kuzu_deps(repo: str, relative: str) -> tuple[list[str], list[str], str | None]:
     try:
-        from kb.graph.kuzu_store import get_connection, rows_to_dicts
+        from new_kb.graph.kuzu_store import get_connection, rows_to_dicts
         conn = get_connection()
         out_res = conn.execute("""
             MATCH (a:File {repository_name: $repo, relative: $rel})-[:DEPENDS_ON]->(b:File)

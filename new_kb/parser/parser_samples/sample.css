@@ -1,0 +1,18 @@
+:root {
+    --primary-color: #336699;
+}
+
+.card {
+    display: flex;
+    padding: 1rem;
+    background-color: var(--primary-color);
+}
+
+.card > .title,
+.card > .subtitle {
+    font-weight: bold;
+}
+
+@media (max-width: 600px) {
+    .card { flex-direction: column; }
+}

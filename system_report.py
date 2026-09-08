@@ -117,7 +117,7 @@ def module_of(path: str, depth: int = 2) -> str:
 def fetch_edges(repo: str):
     """All DEPENDS_ON edges as (source, target) file pairs."""
     try:
-        from kb.graph.kuzu_store import get_connection, rows_to_dicts
+        from new_kb.graph.kuzu_store import get_connection, rows_to_dicts
         res = get_connection().execute("""
             MATCH (a:File {repository_name: $repo})-[:DEPENDS_ON]->(b:File)
             RETURN a.relative, b.relative

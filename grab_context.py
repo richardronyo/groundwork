@@ -29,7 +29,7 @@ from typing import List, Dict, Tuple, Optional
 
 import chromadb
 import psycopg
-from kb.graph.kuzu_store import (
+from new_kb.graph.kuzu_store import (
     get_connection as get_kuzu_connection,
     get_dependencies as kuzu_get_dependencies,
 )

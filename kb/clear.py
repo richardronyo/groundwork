@@ -70,7 +70,7 @@ def clear_postgres(repo_name=None):
 
 def clear_kuzu(repo_name=None):
     try:
-        from kb.graph.kuzu_store import (
+        from new_kb.graph.kuzu_store import (
             get_connection as kuzu_conn, clear_repo as kz_clear_repo,
             clear_all as kz_clear_all, KUZU_DB_PATH,
         )
