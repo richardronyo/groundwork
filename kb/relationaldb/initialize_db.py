@@ -1,10 +1,11 @@
 import os
 import psycopg
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_NAME = "repo_analysis"
+DB_NAME = "groundwork_reldb"
 
 DB_CONFIG = {
     "host": "localhost",
@@ -48,9 +49,23 @@ def create_db():
 
 MIGRATIONS = [
     "ALTER TABLE files ADD COLUMN IF NOT EXISTS rules_extracted BOOLEAN DEFAULT FALSE",
-    "ALTER TABLE files ADD COLUMN IF NOT EXISTS imports JSONB DEFAULT '[]'",   # <-- add this line
+    "ALTER TABLE files ADD COLUMN IF NOT EXISTS import_names JSONB DEFAULT '[]'",   # <-- NEW column for the list
+    # ai_providers was created without a UNIQUE constraint on (user_id, provider_name),
+    # which store_api_key()'s "ON CONFLICT (user_id, provider_name) DO UPDATE" requires
+    # to exist. Postgres has no "ADD CONSTRAINT IF NOT EXISTS", so guard it with a
+    # DO block instead — safe to run on every startup.
+    """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'ai_providers_user_provider_unique'
+        ) THEN
+            ALTER TABLE ai_providers
+                ADD CONSTRAINT ai_providers_user_provider_unique UNIQUE (user_id, provider_name);
+        END IF;
+    END $$;
+    """,
 ]
-
 def init_db():
     """Creates all tables. Safe to run repeatedly."""
     conn = psycopg.connect(**DB_CONFIG)
@@ -139,6 +154,17 @@ def init_db():
             )
             """)
 
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS ai_providers (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                provider_name TEXT NOT NULL,
+                api_key_encrypted TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
+                UNIQUE(user_id, provider_name)
+            )
+            """)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_classes_file ON classes(file_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_class_attrs_class ON class_attributes(class_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_functions_file ON functions(file_id)")
@@ -159,18 +185,18 @@ def init_db():
 
 # ── File metrics ──────────────────────────────────────────────────────────────
 
-def save_file(conn, repository_name, file_path, language, metrics):
-    """Inserts or updates a file record (metrics only). Returns file_id.
-    Note: does NOT touch rules_extracted, so re-scanning won't wipe rule state."""
+def save_file(conn, repository_name, file_path, language, metrics, import_names=None):
+    """Inserts or updates a file record. Returns file_id."""
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO files (
                 repository_name, file_path, language,
                 classes, functions, methods,
-                async_functions, imports, lines
+                async_functions, imports, lines,
+                import_names
             )
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (repository_name, file_path)
             DO UPDATE SET
                 language = EXCLUDED.language,
@@ -179,18 +205,18 @@ def save_file(conn, repository_name, file_path, language, metrics):
                 methods = EXCLUDED.methods,
                 async_functions = EXCLUDED.async_functions,
                 imports = EXCLUDED.imports,
-                lines = EXCLUDED.lines
+                lines = EXCLUDED.lines,
+                import_names = EXCLUDED.import_names
             RETURNING id
             """,
             (
                 repository_name, file_path, language,
                 metrics["classes"], metrics["functions"], metrics["methods"],
                 metrics["async_functions"], metrics["imports"], metrics["lines"],
+                json.dumps(import_names or [])   # store list as JSON array
             ),
         )
         return cur.fetchone()[0]
-
-
 # ── Structural detail (names, not just counts) ────────────────────────────────
 
 def save_structure(conn, file_id, classes, functions):

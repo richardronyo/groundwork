@@ -364,7 +364,7 @@ class ReportsPane(Vertical):
 
 def pg_list_repos() -> tuple[list[str], str | None]:
     try:
-        from kb.relationaldb.initialize_db import get_connection, list_repositories
+        from old_kb.relationaldb.initialize_db import get_connection, list_repositories
         conn = get_connection()
         try:
             return list_repositories(conn), None
@@ -376,7 +376,7 @@ def pg_list_repos() -> tuple[list[str], str | None]:
 
 def pg_files(repo: str) -> tuple[list[dict], str | None]:
     try:
-        from kb.relationaldb.initialize_db import get_connection
+        from old_kb.relationaldb.initialize_db import get_connection
         conn = get_connection()
         try:
             with conn.cursor() as cur:
@@ -398,7 +398,7 @@ def pg_files(repo: str) -> tuple[list[dict], str | None]:
 
 def pg_rules(repo: str) -> tuple[dict, str | None]:
     try:
-        from kb.relationaldb.initialize_db import get_connection, load_business_rules_from_db
+        from old_kb.relationaldb.initialize_db import get_connection, load_business_rules_from_db
         conn = get_connection()
         try:
             return load_business_rules_from_db(conn, repo), None
@@ -410,7 +410,7 @@ def pg_rules(repo: str) -> tuple[dict, str | None]:
 
 def pg_key_points(repo: str) -> tuple[list[str], str | None]:
     try:
-        from kb.relationaldb.initialize_db import get_connection, load_key_points_from_db
+        from old_kb.relationaldb.initialize_db import get_connection, load_key_points_from_db
         conn = get_connection()
         try:
             return load_key_points_from_db(conn, repo), None

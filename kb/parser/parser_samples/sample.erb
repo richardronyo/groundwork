@@ -1,0 +1,14 @@
+<html>
+<head><title><%= @title %></title></head>
+<body>
+  <% if @users.any? %>
+    <ul>
+      <% @users.each do |user| %>
+        <li><%= user.name %></li>
+      <% end %>
+    </ul>
+  <% else %>
+    <p>No users found.</p>
+  <% end %>
+</body>
+</html>

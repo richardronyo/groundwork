@@ -1,31 +1,26 @@
 """
-Groundwork — Stage 4: Key Point Synthesis → PostgreSQL
+Groundwork — Stage 4: Key Point Synthesis → PostgreSQL (Any LLM)
 
-Reads business rules from the DB, synthesizes repo-level key points via OpenAI,
-saves them to the key_points table. Independently runnable.
+Reads business rules from the DB, synthesizes key points via a provider-agnostic
+LLM client, and saves them to the key_points table.
 
 Usage:
-    python3 synthesize.py --repo flask
-    python3 synthesize.py            # if only one repo in the DB
+    python3 synthesize.py --repo flask --provider openai --model gpt-4o
+    python3 synthesize.py --repo flask --provider anthropic --model claude-3-opus
 """
 
 import sys
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-from kb.vector.extract_business_rules import (
-    get_client, synthesize_repo_function, MAX_KEY_POINTS,
-)
 from kb.relationaldb.initialize_db import (
-    get_connection, load_business_rules_from_db,
-    save_key_points, list_repositories,
+    get_connection, load_business_rules_from_db, save_key_points, list_repositories
 )
+from kb.vector.extract_business_rules import synthesize_repo_function, MAX_KEY_POINTS
 
 
 def resolve_repo(conn, requested):
     repos = list_repositories(conn)
     if not repos:
-        print("Error: no repositories in DB. Run metadata.py first.")
+        print("Error: no repositories in DB.")
         sys.exit(1)
     if requested:
         return requested
@@ -38,33 +33,38 @@ def resolve_repo(conn, requested):
     sys.exit(1)
 
 
+def run_synthesis(repo_name: str, provider: str, model: str, max_key_points: int = 15):
+    """Reusable entry point for the pipeline."""
+    conn = get_connection()
+    try:
+        rules = load_business_rules_from_db(conn, repo_name)
+        if not rules:
+            print(f"Error: no business rules for '{repo_name}'. Run extract_business_rules.py first.")
+            return
+        print(f"Loaded rules for {len(rules)} files.")
+        key_points = synthesize_repo_function(rules, provider, model, max_key_points)
+        save_key_points(conn, repo_name, key_points)
+        conn.commit()
+        print(f"Saved {len(key_points)} key points to the key_points table.")
+    finally:
+        conn.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Synthesize key points from DB rules")
     parser.add_argument("--repo", help="Repository name as stored in the DB")
-    parser.add_argument("--workers", type=int, default=1,
-                        help="Number of parallel workers (default: 1, synthesis is typically sequential)")
-    parser.add_argument("--max-key-points", type=int, default=MAX_KEY_POINTS,
-                        help=f"Maximum key points to generate (default: {MAX_KEY_POINTS})")
+    parser.add_argument("--provider", default="openai", help="LLM provider")
+    parser.add_argument("--model", default="gpt-4o", help="Model name")
+    parser.add_argument("--max-key-points", type=int, default=MAX_KEY_POINTS)
     args = parser.parse_args()
 
     conn = get_connection()
     try:
         repo_name = resolve_repo(conn, args.repo)
-        business_rules = load_business_rules_from_db(conn, repo_name)
-        if not business_rules:
-            print(f"Error: no business rules for '{repo_name}'. Run extract_business_rules.py first.")
-            sys.exit(1)
-
-        print(f"Loaded rules for {len(business_rules)} files.")
-        client = get_client()
-        repo_function = synthesize_repo_function(
-            business_rules, client, max_points=args.max_key_points)
-
-        save_key_points(conn, repo_name, repo_function)
-        conn.commit()
-        print(f"Saved {len(repo_function)} key points to the key_points table.")
     finally:
         conn.close()
+
+    run_synthesis(repo_name, args.provider, args.model, args.max_key_points)
 
 
 if __name__ == "__main__":

@@ -59,7 +59,7 @@ from system_report import (
     module_of, fetch_edges, fetch_files, fetch_key_points, fetch_vectors,
     _save, C_PRIMARY, C_ACCENT, C_MUTED, C_EDGE,
 )
-from kb.diagram import (
+from old_kb.diagram import (
     SCANNABLE, _strip_comments, short, resolve_repo_path,
 )
 from report_pdf import _styles, _doc, _inline, timestamp
@@ -148,7 +148,7 @@ def infer_purpose(repo, key_points, files, use_llm=True):
     if use_llm and key_points and os.getenv("OPENAI_API_KEY"):
         try:
             from openai import OpenAI
-            from kb.grab_context import REPO_LEVEL_SYSTEM
+            from old_kb.grab_context import REPO_LEVEL_SYSTEM
             client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             profile = (f"Repository: {repo}\n"
                        f"Files: {len(files)}, lines: {total_lines}\n"

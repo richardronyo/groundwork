@@ -62,7 +62,7 @@ from dotenv import load_dotenv
 # main report figures were already self-contained; only the appendix's
 # per-function and per-capability drill-down images depended on kb.diagram,
 # and those are adjusted below (see build_appendix_images).
-from kb.diagram import (
+from old_kb.diagram import (
     LANGUAGE_BY_EXT as SCANNABLE,
     _strip_comments,
     short,
@@ -131,7 +131,7 @@ def fetch_edges(repo: str):
 def fetch_files(repo: str):
     """File metrics from PostgreSQL: [{path, language, functions, classes, lines}]."""
     try:
-        from kb.relationaldb.initialize_db import get_connection
+        from old_kb.relationaldb.initialize_db import get_connection
         conn = get_connection()
     except Exception as e:
         print(f"  (PostgreSQL unavailable: {e})")
@@ -153,7 +153,7 @@ def fetch_files(repo: str):
 
 def fetch_key_points(repo: str):
     try:
-        from kb.relationaldb.initialize_db import get_connection, load_key_points_from_db
+        from old_kb.relationaldb.initialize_db import get_connection, load_key_points_from_db
         conn = get_connection()
         try:
             return load_key_points_from_db(conn, repo)

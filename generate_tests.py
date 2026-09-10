@@ -37,7 +37,7 @@ from pathlib import Path
 from openai import OpenAI
 from dotenv import load_dotenv
 
-from kb.relationaldb.initialize_db import (
+from old_kb.relationaldb.initialize_db import (
     get_connection, list_repositories,
     load_business_rules_from_db,
 )

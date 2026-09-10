@@ -21,7 +21,6 @@ import hashlib
 import pickle
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
 
 import chromadb
 from dotenv import load_dotenv
@@ -49,13 +48,6 @@ def collection_name_for(repo_name: str) -> str:
 
 
 # ── Fast path: encode once, compare by matrix multiply ────────────────────────
-#
-# The BERTScore path calls the model once per (file × key point) pair, so every
-# rule is re-encoded once per key point — O(files × key_points) forward passes.
-# Instead we encode each unique rule ONCE and each key point ONCE, then compute
-# all similarities with a single matrix multiply: O(rules + key_points) passes.
-# The stored vector keeps the same meaning: dimension k = how similar this
-# file's rules are, on average, to key point k.
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
@@ -88,11 +80,11 @@ def _encode_transformers(texts, model_name, batch_size):
             batch = texts[i:i + batch_size]
             enc = tok(batch, padding=True, truncation=True,
                       max_length=256, return_tensors="pt").to(device)
-            hidden = model(**enc).last_hidden_state          # (B, T, D)
+            hidden = model(**enc).last_hidden_state
             mask = enc["attention_mask"].unsqueeze(-1).float()
             summed = (hidden * mask).sum(1)
             counts = mask.sum(1).clamp(min=1e-9)
-            emb = summed / counts                            # mean pooling
+            emb = summed / counts
             emb = torch.nn.functional.normalize(emb, p=2, dim=1)
             out.append(emb.cpu().numpy())
             done = min(i + batch_size, len(texts))
@@ -123,7 +115,6 @@ def build_vectorstore_fast(business_rules, key_points, collection,
     total = len(business_rules)
     n_kp = len(key_points)
 
-    # Flatten rules, remembering which file each belongs to
     all_rules, owners = [], []
     for rel, rules in business_rules.items():
         for r in rules:
@@ -134,7 +125,6 @@ def build_vectorstore_fast(business_rules, key_points, collection,
         print("  No rules to embed.")
         return
 
-    # De-duplicate: identical rule text only needs encoding once
     uniq = list(dict.fromkeys(all_rules))
     index_of = {t: i for i, t in enumerate(uniq)}
 
@@ -144,16 +134,14 @@ def build_vectorstore_fast(business_rules, key_points, collection,
     print(f"  Rules             : {len(all_rules)} ({len(uniq)} unique)")
     print(f"  Model             : {model_name}")
     print(f"\n  Encoding {len(uniq)} unique rules once...")
-    R = encode_texts(uniq, model_name, batch_size)          # (U, D) normalised
+    R = encode_texts(uniq, model_name, batch_size)
 
     print(f"  Encoding {n_kp} key points once...")
-    K = encode_texts(list(key_points), model_name, batch_size)  # (K, D) normalised
+    K = encode_texts(list(key_points), model_name, batch_size)
 
-    # All rule↔key-point cosine similarities in one matrix multiply
     print("  Computing similarities (single matrix multiply)...")
-    S = R @ K.T                                             # (U, K)
+    S = R @ K.T
 
-    # Per-file mean over its rules
     upserted = skipped = 0
     ids, embs, metas, docs = [], [], [], []
     for i, (rel, rules) in enumerate(business_rules.items()):
@@ -181,7 +169,6 @@ def build_vectorstore_fast(business_rules, key_points, collection,
         docs.append("\n\n".join(rules))
         upserted += 1
 
-        # Batch the upserts so ChromaDB isn't hit once per file
         if len(ids) >= 500:
             collection.upsert(ids=ids, embeddings=embs, metadatas=metas, documents=docs)
             ids, embs, metas, docs = [], [], [], []
@@ -202,13 +189,11 @@ def load_bert_scorer():
 
 
 def get_cache_key(rules, key_points):
-    """Generate cache key based on rules and key points."""
     content = json.dumps({"rules": sorted(rules), "key_points": key_points}, sort_keys=True)
     return hashlib.md5(content.encode()).hexdigest()
 
 
 def compute_file_vector(rules, key_points, bert_score_fn, use_cache=True):
-    """Compute file vector with caching to avoid recomputation."""
     if not rules:
         return []
     
@@ -222,7 +207,6 @@ def compute_file_vector(rules, key_points, bert_score_fn, use_cache=True):
         except Exception:
             pass
     
-    # Compute vector
     file_vector = []
     for kp in key_points:
         refs = [kp] * len(rules)
@@ -230,7 +214,6 @@ def compute_file_vector(rules, key_points, bert_score_fn, use_cache=True):
                                  model_type=BERT_MODEL, verbose=False)
         file_vector.append(round(float(F1.mean()), 6))
     
-    # Cache result
     if use_cache:
         try:
             with open(cache_file, 'wb') as f:
@@ -242,7 +225,6 @@ def compute_file_vector(rules, key_points, bert_score_fn, use_cache=True):
 
 
 def compute_single_file_vector(args):
-    """Compute vector for a single file. Must be picklable for ProcessPoolExecutor."""
     file_path, rules, key_points, bert_model, use_cache = args
     
     if not rules:
@@ -258,12 +240,10 @@ def compute_single_file_vector(args):
                                      model_type=bert_model, verbose=False)
             file_vector.append(round(float(F1.mean()), 6))
         
-        # Calculate top key point
         n_kp = len(key_points)
         top_index = int(max(range(n_kp), key=lambda k: file_vector[k]))
         top_score = round(file_vector[top_index], 4)
         
-        # Create metadata
         metadata = {
             "relative": file_path,
             "name": file_path.split("/")[-1],
@@ -274,7 +254,6 @@ def compute_single_file_vector(args):
             "kp_scores": json.dumps({f"kp_{k}": file_vector[k] for k in range(n_kp)}),
         }
         
-        # Cache result
         if use_cache:
             cache_key = get_cache_key(rules, key_points)
             cache_file = CACHE_DIR / f"{cache_key}.pkl"
@@ -291,18 +270,11 @@ def compute_single_file_vector(args):
 
 
 def get_collection(db_path, collection_name, expected_dim=None) -> chromadb.Collection:
-    """
-    Returns the collection, recreating it if its stored vector dimension
-    no longer matches expected_dim. ChromaDB locks a collection to the
-    dimension of its first insert, so a changed key-point count (which
-    changes the vector length) requires a fresh collection.
-    """
     client = chromadb.PersistentClient(path=db_path)
     collection = client.get_or_create_collection(
         name=collection_name, metadata={"hnsw:space": "cosine"})
 
     if expected_dim is not None and collection.count() > 0:
-        # Peek at one stored vector to read its dimension
         existing = collection.peek(1)
         embeddings = existing.get("embeddings")
         if embeddings is not None and len(embeddings) > 0:
@@ -319,7 +291,6 @@ def get_collection(db_path, collection_name, expected_dim=None) -> chromadb.Coll
 
 def build_vectorstore_parallel(business_rules, key_points, collection, bert_score_fn, 
                                max_workers=4, use_cache=True):
-    """Parallel version of build_vectorstore."""
     total = len(business_rules)
     n_kp = len(key_points)
     print(f"\n  Files to process  : {total}")
@@ -327,7 +298,6 @@ def build_vectorstore_parallel(business_rules, key_points, collection, bert_scor
     print(f"  Vector dimensions : {n_kp} (one per key point)")
     print(f"  Using {max_workers} workers for BERTScore computation\n")
     
-    # Prepare arguments for parallel processing
     args_list = [
         (file_path, rules, key_points, BERT_MODEL, use_cache)
         for file_path, rules in business_rules.items()
@@ -337,7 +307,6 @@ def build_vectorstore_parallel(business_rules, key_points, collection, bert_scor
     completed = 0
     
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all tasks
         future_to_file = {
             executor.submit(compute_single_file_vector, args): args[0] 
             for args in args_list
@@ -347,7 +316,6 @@ def build_vectorstore_parallel(business_rules, key_points, collection, bert_scor
             file_path = future_to_file[future]
             completed += 1
             
-            # Update progress
             pct = int(completed / total * 40)
             bar = "█" * pct + "░" * (40 - pct)
             name = file_path.split("/")[-1]
@@ -359,7 +327,6 @@ def build_vectorstore_parallel(business_rules, key_points, collection, bert_scor
                     skipped += 1
                     continue
                 
-                # Store in ChromaDB
                 collection.upsert(
                     ids=[path], 
                     embeddings=[vector],
@@ -375,7 +342,6 @@ def build_vectorstore_parallel(business_rules, key_points, collection, bert_scor
 
 
 def build_vectorstore_sequential(business_rules, key_points, collection, bert_score_fn, use_cache=True):
-    """Original sequential version for comparison."""
     total = len(business_rules)
     n_kp = len(key_points)
     print(f"\n  Files to process  : {total}")
@@ -434,6 +400,67 @@ def resolve_repo(conn, requested):
     sys.exit(1)
 
 
+# ─── Reusable pipeline function ──────────────────────────────────────────────
+
+def run_embeddings(
+    repo_name: str,
+    chroma_db_path: str = CHROMA_DB_PATH,
+    collection_name: str = None,
+    workers: int = 4,
+    no_cache: bool = False,
+    sequential: bool = False,
+    method: str = "fast",
+    embed_model: str = EMBED_MODEL,
+    batch_size: int = 64,
+):
+    """
+    Reusable entry point for the ingestion pipeline.
+    Loads business rules and key points from PostgreSQL, builds vectors,
+    and stores them in ChromaDB.
+    """
+    conn = get_connection()
+    try:
+        business_rules = load_business_rules_from_db(conn, repo_name)
+        key_points = load_key_points_from_db(conn, repo_name)
+
+        if not business_rules:
+            print(f"Error: no business rules for '{repo_name}'.")
+            return
+        if not key_points:
+            print(f"Error: no key points for '{repo_name}'. Run synthesize first.")
+            return
+
+        print(f"  Loaded {len(business_rules)} files with rules")
+        print(f"  Loaded {len(key_points)} key points")
+        print(f"  ChromaDB path      : {chroma_db_path}")
+        print(f"  Method             : {method}")
+        if method == "bertscore":
+            print(f"  BERTScore model    : {BERT_MODEL}")
+            print(f"  Cache enabled      : {not no_cache}")
+    finally:
+        conn.close()
+
+    coll_name = collection_name or collection_name_for(repo_name)
+    collection = get_collection(chroma_db_path, coll_name, expected_dim=len(key_points))
+
+    if method == "fast":
+        build_vectorstore_fast(business_rules, key_points, collection,
+                               model_name=embed_model, batch_size=batch_size)
+    else:
+        bert_score_fn = load_bert_scorer()
+        print(f"  ✓ BERTScore model loaded.\n")
+        if sequential:
+            build_vectorstore_sequential(business_rules, key_points, collection,
+                                         bert_score_fn, not no_cache)
+        else:
+            build_vectorstore_parallel(business_rules, key_points, collection,
+                                       bert_score_fn, workers, not no_cache)
+
+    print_summary(collection, key_points)
+
+
+# ─── CLI entry point ──────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(
         description="Groundwork — build ChromaDB vectors from PostgreSQL")
@@ -459,44 +486,20 @@ def main():
     conn = get_connection()
     try:
         repo_name = resolve_repo(conn, args.repo)
-        print(f"\n  Loading data for '{repo_name}' from PostgreSQL...")
-        business_rules = load_business_rules_from_db(conn, repo_name)
-        key_points     = load_key_points_from_db(conn, repo_name)
-
-        if not business_rules:
-            print(f"Error: no business rules for '{repo_name}'.")
-            sys.exit(1)
-        if not key_points:
-            print(f"Error: no key points for '{repo_name}'. Run synthesize.py first.")
-            sys.exit(1)
-
-        print(f"  Loaded {len(business_rules)} files with rules")
-        print(f"  Loaded {len(key_points)} key points")
-        print(f"  ChromaDB path      : {args.db}")
-        print(f"  Method             : {args.method}")
-        if args.method == "bertscore":
-            print(f"  BERTScore model    : {BERT_MODEL}")
-            print(f"  Cache enabled      : {not args.no_cache}")
     finally:
         conn.close()
 
-    coll_name = args.collection or collection_name_for(repo_name)
-    collection = get_collection(args.db, coll_name, expected_dim=len(key_points))
-
-    if args.method == "fast":
-        build_vectorstore_fast(business_rules, key_points, collection,
-                               model_name=args.embed_model, batch_size=args.batch_size)
-    else:
-        bert_score_fn = load_bert_scorer()
-        print(f"  ✓ BERTScore model loaded.\n")
-        if args.sequential:
-            build_vectorstore_sequential(business_rules, key_points, collection,
-                                         bert_score_fn, not args.no_cache)
-        else:
-            build_vectorstore_parallel(business_rules, key_points, collection,
-                                       bert_score_fn, args.workers, not args.no_cache)
-
-    print_summary(collection, key_points)
+    run_embeddings(
+        repo_name=repo_name,
+        chroma_db_path=args.db,
+        collection_name=args.collection,
+        workers=args.workers,
+        no_cache=args.no_cache,
+        sequential=args.sequential,
+        method=args.method,
+        embed_model=args.embed_model,
+        batch_size=args.batch_size,
+    )
 
 
 if __name__ == "__main__":
