@@ -21,7 +21,7 @@ from functools import lru_cache
 from kb.relationaldb.initialize_db import get_connection
 from kb.vector.embeddings import get_collection, EMBED_MODEL, CHROMA_DB_PATH
 
-MEMORY_TYPES = {"fact", "reflection", "correction"}
+MEMORY_TYPES = {"fact", "reflection", "correction", "input", "output"}
 
 
 def _memory_collection_name(repo_name: str) -> str:
@@ -102,6 +102,42 @@ def recall(repo_name: str, query: str, n_results: int = 5,
         where=where,
     )
     return results["documents"][0] if results["documents"] else []
+
+
+def remember_interaction(repo_name: str, file_path: str, input_text: str,
+                          output_text: str) -> tuple[int, int]:
+    """
+    Stores the full prompt sent to the model and the full response received,
+    as two separate memory entries rather than one combined blob — an
+    "input" memory and an "output" memory answer different recall queries
+    (finding a similar past prompt vs. finding a similar past generated
+    test), and embedding raw combined JSON would make both searches worse.
+    Returns (input_memory_id, output_memory_id).
+    """
+    input_id = remember(repo_name, input_text, memory_type="input", file_path=file_path)
+    output_id = remember(repo_name, output_text, memory_type="output", file_path=file_path)
+    return input_id, output_id
+
+
+def recall_by_type(repo_name: str, file_path: str, memory_type: str,
+                    n_results: int = 1) -> list[str]:
+    """Exact-match convenience for pulling a file's most recent input(s) or
+    output(s) — e.g. recall_by_type(repo, path, "output") to see what test
+    was generated last time, without a semantic search."""
+    if memory_type not in MEMORY_TYPES:
+        raise ValueError(f"memory_type must be one of {MEMORY_TYPES}, got {memory_type!r}")
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT content FROM agent_memory
+                   WHERE repository_name = %s AND file_path = %s AND memory_type = %s
+                   ORDER BY created_at DESC LIMIT %s""",
+                (repo_name, file_path, memory_type, n_results)
+            )
+            return [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
 
 
 def recall_for_file(repo_name: str, file_path: str, n_results: int = 5) -> list[str]:
