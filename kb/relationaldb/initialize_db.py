@@ -89,6 +89,19 @@ def init_db():
             )
             """)
 
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS agent_memory (
+                id BIGSERIAL PRIMARY KEY,
+                repository_name TEXT NOT NULL,
+                file_path TEXT,                 -- NULL for repo-level memories
+                memory_type TEXT NOT NULL,      -- 'reflection' | 'correction' | 'fact'
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT NOW()
+                ) 
+                """
+            )
+
             cur.execute("""
             CREATE TABLE IF NOT EXISTS business_rules (
                 id BIGSERIAL PRIMARY KEY,
