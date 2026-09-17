@@ -1,0 +1,76 @@
+file,business_rule
+sessions.py,The session is marked as permanent if the '_permanent' key is set to true.
+sessions.py,The session is considered modified if any changes are made to the session data.
+sessions.py,"If the session is empty and modified, the corresponding cookie will be deleted."
+sessions.py,A cookie will be set if the session has been modified or if the session is permanent and SESSION_REFRESH_EACH_REQUEST is true.
+sessions.py,The expiration time for a permanent session is set to the current time plus the application's permanent session lifetime.
+sessions.py,"If the session cannot be opened due to a configuration error, a null session will be created."
+sessions.py,The session cookie name is determined by the SESSION_COOKIE_NAME configuration value.
+sessions.py,The session cookie domain is determined by the SESSION_COOKIE_DOMAIN configuration value.
+sessions.py,The session cookie path is determined by the SESSION_COOKIE_PATH configuration value or falls back to APPLICATION_ROOT or '/' if not set.
+sessions.py,The session cookie is marked as HttpOnly based on the SESSION_COOKIE_HTTPONLY configuration value.
+sessions.py,The session cookie is marked as secure based on the SESSION_COOKIE_SECURE configuration value.
+sessions.py,The SameSite attribute for the session cookie is determined by the SESSION_COOKIE_SAMESITE configuration value.
+sessions.py,The session cookie can be partitioned based on the SESSION_COOKIE_PARTITIONED configuration value.
+provider.py,"The response method requires either positional or keyword arguments, but not both."
+provider.py,"If no arguments are provided to the response method, None is serialized."
+provider.py,The dumps method uses a default function to serialize objects that are not natively serializable to JSON.
+provider.py,The ensure_ascii attribute determines whether non-ASCII characters are replaced with escape sequences during JSON serialization.
+provider.py,The sort_keys attribute determines whether the keys in serialized dictionaries are sorted.
+provider.py,The compact attribute controls the formatting of the response output based on the debug mode.
+provider.py,"The default value for the compact attribute is None, which means it will not add indentation or newlines unless in debug mode."
+__init__.py,"If the current application context is available, the dumps function uses the app's json.dumps method to serialize data."
+__init__.py,"If the current application context is not available, the dumps function uses the default parameter to handle serialization."
+__init__.py,"If the current application context is available, the dump function uses the app's json.dump method to serialize data and write it to a file."
+__init__.py,"If the current application context is not available, the dump function uses the default parameter to handle serialization."
+__init__.py,"If the current application context is available, the loads function uses the app's json.loads method to deserialize data."
+__init__.py,"If the current application context is not available, the loads function uses the standard json.loads method to deserialize data."
+__init__.py,"If the current application context is available, the load function uses the app's json.load method to deserialize data from a file."
+__init__.py,"If the current application context is not available, the load function uses the standard json.load method to deserialize data from a file."
+__init__.py,The jsonify function requires an active application context and uses the app's json.response method to serialize arguments as JSON.
+__init__.py,"In debug mode, the output of the jsonify function is formatted with indentation for easier reading."
+blueprints.py,"The 'static_folder' must be set to serve static files, otherwise a RuntimeError is raised."
+blueprints.py,"The maximum age for caching a file is determined by the 'SEND_FILE_MAX_AGE_DEFAULT' configuration, which defaults to None."
+blueprints.py,"If the 'mode' parameter in the 'open_resource' function is not 'r', 'rt', or 'rb', a ValueError is raised."
+cli.py,"The application must be specified using the '--app' option, 'FLASK_APP' environment variable, or a 'wsgi.py' or 'app.py' file in the current directory."
+cli.py,"If the '--debug' option is not provided, it defaults to False."
+cli.py,The '--reload' option is enabled by default if debug mode is active.
+cli.py,The '--debugger' option is enabled by default if debug mode is active.
+cli.py,The '--cert' option must be specified when the '--key' option is used.
+cli.py,"When the '--cert' option is set to 'adhoc', the '--key' option cannot be used."
+cli.py,"When the '--cert' option is an SSLContext object, the '--key' option cannot be used."
+cli.py,The '--cert' option must also be specified if the '--key' option is provided.
+cli.py,"The '--env-file' option loads environment variables from a specified file, taking precedence over those set by '.env' and '.flaskenv'."
+cli.py,The '--extra-files' option specifies additional files that trigger a reload on change.
+cli.py,The '--exclude-patterns' option specifies files matching these patterns that will not trigger a reload on change.
+cli.py,The application context is automatically available for custom commands registered under 'app.cli' or 'blueprint.cli'.
+cli.py,The application must be loaded before executing commands that require it.
+cli.py,"If the application cannot be found or loaded, a NoAppException is raised with a specific error message."
+cli.py,"The '--version' option shows the versions of Python, Flask, and Werkzeug."
+app.py,The application will use a default session lifetime of 31 days unless specified otherwise.
+app.py,"The application will not allow requests larger than 500,000 bytes by default."
+app.py,"The application will allow a maximum of 1,000 form parts in a request."
+app.py,The application will raise a RuntimeError if the 'static_folder' is not set when trying to serve static files.
+app.py,"The application will only allow resources to be opened in read mode ('r', 'rt', 'rb')."
+app.py,The application will return None for the max age of a file if the 'SEND_FILE_MAX_AGE_DEFAULT' configuration is set to None.
+app.py,The application will use the 'SERVER_NAME' configuration to determine the host for URL generation when not in an active request.
+app.py,The application will log exceptions and return a 500 Internal Server Error if no error handler is found for an unhandled exception.
+app.py,The application will not propagate exceptions if 'PROPAGATE_EXCEPTIONS' is set to False.
+app.py,The application will automatically reload in debug mode when code changes are detected.
+app.py,The application will suppress server errors with a generic error page unless it is in debug mode.
+app.py,The application will require the 'SERVER_NAME' configuration to be set for generating external URLs outside of an active request.
+ctx.py,The 'after_this_request' function can only be used when a request context is active.
+ctx.py,The 'copy_current_request_context' function can only be used when a request context is active.
+ctx.py,The 'has_request_context' function returns true if an app context is active and has request information.
+ctx.py,The 'has_app_context' function returns true if an app context is active.
+ctx.py,The 'request' property raises a RuntimeError if there is no request in the current context.
+ctx.py,The 'session' property raises a RuntimeError if there is no request in the current context.
+ctx.py,The 'push' method triggers routing matching only if the context is not currently pushed.
+ctx.py,The 'pop' method raises a RuntimeError if the context is not the active context.
+ctx.py,The 'pop' method will only trigger cleanup once the context has been popped as many times as it was pushed.
+testing.py,The base_url cannot be provided along with subdomain or url_scheme when initializing the EnvironBuilder.
+testing.py,"If base_url is not provided, it is constructed using the application's SERVER_NAME and APPLICATION_ROOT."
+testing.py,The session_transaction method raises a TypeError if cookies are disabled.
+testing.py,The session_transaction method raises a RuntimeError if the session backend does not open a session.
+testing.py,The open method clears previously preserved contexts to prevent them from being preserved across redirects or multiple requests.
+testing.py,The __enter__ method raises a RuntimeError if client invocations are nested.
