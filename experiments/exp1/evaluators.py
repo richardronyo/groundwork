@@ -52,6 +52,20 @@ def compute_cosine(reference, hypothesis):
  
     return sim
 
+CODE_DOCUMENTATION_MAP = {
+    'blueprints.py': ['blueprints.rst', 'api.rst'],
+    'signals.py': ['signals.rst'],
+    'app.py': ['api.rst'],
+    'ctx.py': ['api.rst'],
+    'sessions.py': ['api.rst'],
+    'views.py': ['api.rst'],
+    'cli.py': ['api.rst'],
+    'testing.py': ['api.rst'],
+    'provider.py': ['api.rst'],
+    '__init__.py': ['api.rst'],
+    'config.py': ['config.rst']
+}
+
 if __name__ == "__main__":
     reference = 'The cat sat on the mat'
     hypothesis = 'The cat is sitting on the mat'
