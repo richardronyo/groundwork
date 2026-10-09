@@ -36,3 +36,10 @@ Keep rules that are already correct unchanged, and keep every rule in the
 same format as the existing ones. Use only what the code enforces.
 Return the complete updated list.
 """
+
+SIMILARITY_PROMPT = '''Rate how similar the meaning of two statements is, as a value between 0 and 1,
+where 0 means completely different and 1 means identical in meaning.
+Judge meaning, not wording. Give a one-sentence reason, then the score.'''
+
+SIMILARITY_REVIEW_PROMPT = '''You scored this pair before. Check the previous score against the two statements.
+Keep it if it is right, or give a corrected score if something was missed.'''
