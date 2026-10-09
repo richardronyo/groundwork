@@ -1,0 +1,111 @@
+description,category,filename,clarity,accuracy,coverage,overall
+"If the current app is available, use its json.dumps method for serialization; otherwise, fallback to json.dumps from the standard json module.",EXPLICIT,__init__.py,8,9,8,8
+"If the current app is available, use its json.dump method to serialize and write to a file; otherwise, fallback to json.dump from the standard json module. Writing must be done in text mode with UTF-8 encoding to be valid JSON.",EXPLICIT,__init__.py,8,9,8,8
+"If the current app is available, use its json.loads method for deserialization; otherwise, fallback to json.loads from the standard json module. The data must be a string or UTF-8 bytes.",EXPLICIT,__init__.py,8,9,8,8
+"If the current app is available, use its json.load method to deserialize data from a file; otherwise, fallback to json.load from the standard json module. The file must be opened in text mode or in binary mode with UTF-8 bytes for deserialization.",EXPLICIT,__init__.py,8,9,8,8
+"Serialize the given arguments as JSON and return a flask.Response object with the application/json mimetype. This operation requires an active app context and may convert dict or list responses automatically. Only positional or keyword arguments may be provided, not both.",EXPLICIT,__init__.py,8,9,8,8
+Text files used in the dump method must be in UTF-8 encoding to maintain validity when serializing to JSON.,EXPLICIT,__init__.py,8,9,8,8
+The application must have a `static_folder` defined to serve static files correctly and the `static_url_path` must not be an empty string.,EXPLICIT,app.py,8,9,10,9
+The application can only be run using `app.run()` if it has not been invoked from Flask's command line interface to avoid blocking CLI commands.,EXPLICIT,app.py,8,9,10,9
+The configuration for `SERVER_NAME` must be explicitly set to enable subdomain routing; relying on default values is not permitted.,EXPLICIT,app.py,8,9,10,9
+"The return value from request handlers must be a valid response type, which can include a string, bytes, dict, list, tuple, or a response object.",EXPLICIT,app.py,8,9,10,9
+"If `max_age` is set to None in the context of caching, the browser should utilize conditional requests instead of a timed cache to optimize resource retrieval.",EXPLICIT,app.py,8,9,10,9
+"If any registered `before_request` handler returns a non-None value, processing of the request must immediately terminate, returning that value as the response.",EXPLICIT,app.py,8,9,10,9
+"If `PROPAGATE_EXCEPTIONS` is set to False and the application is not in debug mode, exceptions raised by view functions will not propagate, preventing error details from being revealed to clients.",EXPLICIT,app.py,8,9,10,9
+View functions must not return None or types not recognized as valid response objects to ensure a consistent and predictable response structure.,EXPLICIT,app.py,8,9,10,9
+"In debug mode, Flask will present a detailed stack trace of exceptions that occur during request handling to enhance debugging capabilities and information accessibility.",EXPLICIT,app.py,8,9,10,9
+"When the `load_dotenv` option is enabled (set to True), the application must load `.env` and `.flaskenv` files to set environment variables accordingly and should handle any file loading errors gracefully.",EXPLICIT,app.py,8,9,10,9
+The `SESSION_COOKIE_HTTPONLY` configuration parameter must be set to True to enhance security by preventing client-side scripts from accessing sensitive cookies.,EXPLICIT,app.py,8,9,10,9
+"Static files will only be served if the `static_folder` is correctly defined and configured, ensuring proper handling of these resources without encountering runtime errors.",EXPLICIT,app.py,8,9,10,9
+"All registered request teardown functions will be executed, regardless of whether an exception was encountered during the request, ensuring consistent cleanup actions are performed after each request.",EXPLICIT,app.py,8,9,10,9
+"Errors occurring during request teardown will be collected and raised if encountered to ensure that exceptions are properly managed, logged, and reported appropriately to prevent silent failures.",EXPLICIT,app.py,8,9,10,9
+An error must be raised if `make_response` receives an invalid response type from a view function; this ensures the validity of responses returned from the application.,EXPLICIT,app.py,8,9,10,9
+"URLs generated through the `url_for` function may include an anchor if specified using the `_anchor` argument, facilitating navigation to specific sections of a page with the correct context.",EXPLICIT,app.py,8,9,10,9
+Automatic OPTIONS responses must be provided by the application if `provide_automatic_options` is set to True and the request method is OPTIONS to comply with method discovery requirements.,EXPLICIT,app.py,8,9,10,9
+The application must validate the consistency between `static_host` and `host_matching` when adding a static route to ensure proper routing behavior and prevent potential conflicts.,EXPLICIT,app.py,8,9,10,9
+"The 'static_folder' must be set to serve static files; otherwise, a RuntimeError is raised when attempting to access static files.",EXPLICIT,blueprints.py,8,9,7,8
+"Resources can only be opened for reading; valid modes are 'r', 'rt', and 'rb'. Opening in any other mode raises a ValueError.",EXPLICIT,blueprints.py,8,9,7,8
+"The default configuration for SEND_FILE_MAX_AGE_DEFAULT is 'None', which tells the browser to use conditional requests instead of a timed cache, which is typically preferable.",IMPLICIT,blueprints.py,8,9,7,8
+"If SEND_FILE_MAX_AGE_DEFAULT is set and is a timedelta, its value should be returned in seconds; if it is None, None should be returned.",IMPLICIT,blueprints.py,8,9,7,8
+"If SEND_FILE_MAX_AGE_DEFAULT is an integer, it is returned directly without further modifications.",IMPLICIT,blueprints.py,8,9,7,8
+A route is automatically registered for the view function serving static files at 'static_url_path' when 'static_folder' is configured.,IMPLICIT,blueprints.py,8,9,7,8
+"The view function used to serve static files is 'send_static_file', which utilizes 'get_send_file_max_age' to determine caching behaviour.",IMPLICIT,blueprints.py,8,9,7,8
+"A Flask application must be specified using the '--app' option, the 'FLASK_APP' environment variable, or by having a 'wsgi.py' or 'app.py' file in the current directory.",EXPLICIT,cli.py,9,9,8,9
+"If multiple Flask applications are detected in a module, a NoAppException will be raised, requiring the user to specify the correct one explicitly.",EXPLICIT,cli.py,9,9,8,9
+"A factory function for creating a Flask application must be callable without arguments; if it cannot be called as such, a NoAppException is raised.",EXPLICIT,cli.py,9,9,8,9
+"If the specified application name does not correspond to a valid attribute name or valid function call, a NoAppException will be raised.",EXPLICIT,cli.py,9,9,8,9
+The environment variable 'FLASK_DEBUG' controls whether the application runs in debug mode; a missing value defaults it to 'False'.,EXPLICIT,cli.py,9,9,8,9
+"If the debug option is not explicitly set during command execution, it will default to the value of the 'FLASK_DEBUG' environment variable.",EXPLICIT,cli.py,9,9,8,9
+The command to launch the development server ('run') is intended only for development purposes and should not be used in production environments.,EXPLICIT,cli.py,9,9,8,9
+"The command 'routes' displays all registered routes in the application, along with their associated methods and endpoints.",EXPLICIT,cli.py,9,9,8,9
+Commands executed with the decorator 'with_appcontext' are guaranteed to run within the application's application context.,EXPLICIT,cli.py,9,9,8,9
+"When using SSL, if the '--key' option is provided, the '--cert' option must also be specified to ensure secure connections.",EXPLICIT,cli.py,9,9,8,9
+A command's application context must be loaded unless it is already active to maintain stability across command executions.,EXPLICIT,cli.py,9,9,8,9
+"If an error occurs while loading the application, it will propagate immediately unless in a reloading scenario, where the error will be displayed but server operation will continue.",EXPLICIT,cli.py,9,9,8,9
+"The application must be properly initialized before executing any commands that require server operations, such as 'run' or 'shell'.",EXPLICIT,cli.py,9,9,8,9
+"The loading of environment variables from '.env' or '.flaskenv' files is managed by the 'load_dotenv_defaults' parameter, which defaults to True but can be overridden by the user.",EXPLICIT,cli.py,9,9,8,9
+"The 'after_this_request' function can only be used when a request context is active, such as in a view function.",EXPLICIT,ctx.py,8,9,7,8
+"The 'copy_current_request_context' function can only be used when a request context is active, such as in a view function.",EXPLICIT,ctx.py,8,9,7,8
+Accessing the 'request' property of the AppContext raises a RuntimeError if there is no associated request object within the context.,EXPLICIT,ctx.py,8,9,7,8
+Accessing the 'session' property of the AppContext raises a RuntimeError if there is no associated request object within the context.,EXPLICIT,ctx.py,8,9,7,8
+The push method of the AppContext triggers request matching only if the context was not already active.,EXPLICIT,ctx.py,8,9,7,8
+The pop method of the AppContext raises a RuntimeError if it is called when the context is not active or if it has been pushed more times than it has been popped.,EXPLICIT,ctx.py,8,9,7,8
+The function has_request_context returns True when a request context is active and False otherwise.,EXPLICIT,ctx.py,8,9,7,8
+The function has_app_context returns True when an app context is active and False otherwise.,EXPLICIT,ctx.py,8,9,7,8
+The constructor of AppContext initializes the context with request and session set to None if they are not provided.,EXPLICIT,ctx.py,8,9,7,8
+The session object is loaded the first time it is accessed rather than when the context is pushed.,EXPLICIT,ctx.py,8,9,7,8
+"Teardown functions are executed when the context is popped, which differs based on whether it is a request or app context.",EXPLICIT,ctx.py,8,9,7,8
+A JSONProvider must implement the :meth:`dumps` and :meth:`loads` methods to support serialization and deserialization of JSON data.,EXPLICIT,provider.py,8,9,8,8
+"The :meth:`response` method accepts either positional or keyword arguments, but both types of arguments cannot be used simultaneously.",EXPLICIT,provider.py,8,9,8,8
+"If no arguments are provided to the :meth:`response` method, then ``None`` is serialized as JSON.",EXPLICIT,provider.py,8,9,8,8
+"The response output is in the ``application/json`` mimetype, as specified in the :meth:`response` method.",EXPLICIT,provider.py,8,9,8,8
+The :meth:`response` method serializes the provided arguments as JSON and returns a Response object containing the serialized data.,EXPLICIT,provider.py,8,9,8,8
+The :meth:`dumps` method sorts keys in serialized dictionaries if the ``sort_keys`` attribute is set to True.,EXPLICIT,provider.py,8,9,8,8
+The ``default`` method must return a valid JSON type or raise a ``TypeError`` when serialization fails on unsupported types.,EXPLICIT,provider.py,8,9,8,8
+The :meth:`loads` method deserializes data from a string or bytes and returns the resulting Python object.,EXPLICIT,provider.py,8,9,8,8
+"The ``compact`` attribute controls the formatting of the response output, based on its value and the application's debug mode.",EXPLICIT,provider.py,8,9,8,8
+The ``ensure_ascii`` attribute specifies whether non-ASCII characters should be replaced with escape sequences during JSON serialization.,EXPLICIT,provider.py,8,9,8,8
+"The :meth:`dumps` method applies default serialization behaviors defined by the attributes of JSONProvider, including ``default``, ``ensure_ascii``, and ``sort_keys``.",EXPLICIT,provider.py,8,9,8,8
+Files must be opened for writing with UTF-8 encoding to ensure valid JSON is written when using the :meth:`dump` method.,EXPLICIT,provider.py,8,9,8,8
+The :meth:`load` method deserializes data that is read from a file opened for reading text or UTF-8 bytes.,EXPLICIT,provider.py,8,9,8,8
+Date instances are serialized to HTTP date format using the ``default`` method during JSON serialization.,EXPLICIT,provider.py,8,9,8,8
+Instances of UUID and decimal types are converted to their string representations using the ``default`` method during JSON serialization.,EXPLICIT,provider.py,8,9,8,8
+Instances of dataclass types are serialized to dictionaries using ``dataclasses.asdict`` during JSON serialization.,EXPLICIT,provider.py,8,9,8,8
+A session is considered permanent if the '_permanent' key is explicitly set to True in the session dictionary.,EXPLICIT,sessions.py,8,9,8,8
+"The 'new' flag for a session is always set to False, indicating that the session cannot reliably determine if it is newly created.",EXPLICIT,sessions.py,8,9,8,8
+"The modified flag for a session must be set to True whenever session data is changed, including modifications to mutable data types within the session, and it must be manually set to True when nested mutable data is modified.",EXPLICIT,sessions.py,8,9,8,8
+"The accessed flag indicates whether the session has been accessed at least once, regardless of whether it was modified. This flag is set when the session object is accessed through the request context, including the global session proxy.",EXPLICIT,sessions.py,8,9,8,8
+"A Set-Cookie header should be included in the response for the session cookie if the session is modified, or if the session is marked as permanent and SESSION_REFRESH_EACH_REQUEST is set to True in the application configuration.",EXPLICIT,sessions.py,8,9,8,8
+"A null session object will be generated when the open_session method fails or returns None, allowing read-only access while modifications will raise an error with a descriptive message explaining the need for a valid secret key.",EXPLICIT,sessions.py,8,9,8,8
+The name of the session cookie is retrieved from the application configuration using app.config['SESSION_COOKIE_NAME'].,EXPLICIT,sessions.py,8,9,8,8
+"The domain attribute for the session cookie is determined by the value in app.config['SESSION_COOKIE_DOMAIN']. If not set, the cookie is limited to the origin domain.",EXPLICIT,sessions.py,8,9,8,8
+"The path for which the session cookie is valid is established using the value from app.config['SESSION_COOKIE_PATH']. If not set, it defaults to app.config['APPLICATION_ROOT'].",EXPLICIT,sessions.py,8,9,8,8
+The status of the HttpOnly attribute for the session cookie is derived from app.config['SESSION_COOKIE_HTTPONLY']. This prohibits client-side scripts from accessing the cookie.,EXPLICIT,sessions.py,8,9,8,8
+The secure attribute for the session cookie is determined by app.config['SESSION_COOKIE_SECURE']. This ensures the cookie is transmitted over HTTPS only if set to True.,EXPLICIT,sessions.py,8,9,8,8
+The SameSite attribute for the session cookie is configured using the value in app.config['SESSION_COOKIE_SAMESITE']. This helps prevent CSRF attacks based on the SameSite policy.,EXPLICIT,sessions.py,8,9,8,8
+The partitioned attribute for the session cookie is derived from the configuration variable app.config['SESSION_COOKIE_PARTITIONED']. This allows for more granular cookie management across different contexts.,EXPLICIT,sessions.py,8,9,8,8
+"The expiration time of the session is calculated based on whether the session is marked as permanent and the application's configured permanent_session_lifetime. If the session is temporary, it returns None.",EXPLICIT,sessions.py,8,9,8,8
+"If the session is empty and it has been modified, the corresponding Set-Cookie header should include a directive to delete the cookie from the response, ensuring that expired sessions do not remain in the client.",EXPLICIT,sessions.py,8,9,8,8
+"A cookie for the session will only be set if the session is not empty and is either marked as modified or if SESSION_REFRESH_EACH_REQUEST is enabled in the application configuration, allowing for proper session tracking across requests.",EXPLICIT,sessions.py,8,9,8,8
+Signals are generated for various stages of the Flask application lifecycle to facilitate internal communication within the application.,IMPLICIT,signals.py,9,8,9,9
+The signal 'template-rendered' indicates that a template has been rendered successfully and is ready to be displayed.,EXPLICIT,signals.py,9,8,9,9
+"The signal 'before-render-template' indicates that a template is about to be rendered, signaling any preparatory actions.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'request-started' signifies the beginning of request processing, allowing observers to perform actions at the start of a request.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'request-finished' indicates that request processing has been completed successfully, signaling the end of the request lifecycle.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'request-tearing-down' indicates that the request context is being torn down, enabling cleanup operations to take place immediately after a request is handled.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'got-request-exception' indicates that an exception was raised during request processing, allowing for error handling or logging to occur.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'appcontext-tearing-down' indicates that the application context is being destroyed, which triggers any necessary cleanup routines associated with the application context.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'appcontext-pushed' indicates that a new application context has been pushed onto the context stack, allowing new context-specific operations to occur.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'appcontext-popped' indicates that the top application context has been removed from the context stack, potentially restoring the previous context.",EXPLICIT,signals.py,9,8,9,9
+"The signal 'message-flashed' indicates that a notification message has been sent to the user, typically for alerts or confirmations, and is ready to be displayed in the interface.",EXPLICIT,signals.py,9,8,9,9
+"The base_url must be absent, or if provided, it cannot coexist with a subdomain or url_scheme.",EXPLICIT,testing.py,8,9,9,8
+"If base_url is None, it is constructed using the server name (SERVER_NAME) and application root (APPLICATION_ROOT).",EXPLICIT,testing.py,8,9,9,8
+"If a subdomain is provided, the server name is formatted as '{subdomain}.{server_name}'.",EXPLICIT,testing.py,8,9,9,8
+"If url_scheme is None, it defaults to the application's preferred URL scheme (PREFERRED_URL_SCHEME).",EXPLICIT,testing.py,8,9,9,8
+The REMOTE_ADDR in the environment base is set to '127.0.0.1'.,EXPLICIT,testing.py,8,9,9,8
+The HTTP_USER_AGENT in the environment base includes the Werkzeug version string.,EXPLICIT,testing.py,8,9,9,8
+"A session transaction can be initiated using a with statement, allowing modifications to the session used within that context.",EXPLICIT,testing.py,8,9,9,8
+"Cookies must be enabled for session transactions. If disabled, a TypeError is raised.",EXPLICIT,testing.py,8,9,9,8
+"If the session backend fails to open a session, a RuntimeError is raised to indicate the issue.",EXPLICIT,testing.py,8,9,9,8
+The invoke method of FlaskCliRunner defaults to the application's CLI group if no CLI command is provided.,EXPLICIT,testing.py,8,9,9,8
+"If 'obj' is absent in the kwargs during a CLI command invocation, a ScriptInfo instance is automatically passed to the 'obj' argument.",EXPLICIT,testing.py,8,9,9,8
