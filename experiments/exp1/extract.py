@@ -9,7 +9,10 @@ from typing import Annotated, TypedDict
 from components import RuleInventory, BRScores
 from prompt import COBREX_BR, USER_STORY_BR, SCORE_PROMPT, REFINER_PROMPT
 from pathlib import Path
-model = ChatLiteLLM(model_name="gpt-4o-mini")
+
+model = ChatLiteLLM(model_name="gpt-5-mini")
+stronger_model = ChatLiteLLM(model_name = "gpt-5.6-luna")
+
 MAX_BR_ITERATION = 3
 
 class State(TypedDict, total = False):
@@ -28,13 +31,13 @@ def extractor(state: State) -> dict:
 
 def scorer(state: State) -> dict:
     prompt = f'{SCORE_PROMPT}\nFilename: {state["filename"]}\nSource Code: {state["source_code"]}\nBusiness Rules: {json.dumps(state["rules"], indent=2)}'
-    scores = model.with_structured_output(BRScores).invoke(prompt).model_dump()
+    scores = stronger_model.with_structured_output(BRScores).invoke(prompt).model_dump()
     return {'scores': scores, 'history': [{'iteration': state['iteration'], 'rules': state['rules'], 'scores': scores}]}
 
 def refiner(state: State) -> dict:
     prompt = (f'{REFINER_PROMPT}\nFilename: {state["filename"]}\nSource Code: {state["source_code"]}\n'
               f'Business Rules: {json.dumps(state["rules"], indent=2)}\nScores: {json.dumps(state["scores"], indent=2)}')
-    rules = model.with_structured_output(RuleInventory).invoke(prompt).model_dump()['rules']
+    rules = stronger_model.with_structured_output(RuleInventory).invoke(prompt).model_dump()['rules']
     return {'rules': rules, 'iteration': state['iteration'] + 1}
 
 def next_step(state: State) -> dict:
