@@ -11,10 +11,11 @@ GROUND_TRUTH = 'data/groundtruth.csv'
 OUTPUT_FOLDER = 'outputs'
 PROMPT_FORMATS = ['cobrex', 'user_story']
 MAX_BR_ITERATION = 3
+LLM_CONCURRENCY = 8     #How many LLM similarity requests run at the same time
 
-def best_matches(truths: pd.DataFrame, rules: pd.DataFrame) -> pd.DataFrame:
-    #For each ground truth, finds the business rule with the highest cosine similarity,
-    #looking only at rules extracted from the code files that correspond to its .rst file
+def all_pairs(truths: pd.DataFrame, rules: pd.DataFrame) -> pd.DataFrame:
+    #Pairs every ground truth with every business rule extracted from the code files
+    #that correspond to its .rst file, and gives each pair its cosine similarity
     model = SentenceTransformer('all-MiniLM-L6-v2')
     code_file = rules['filename'].map(lambda name: Path(name).name)     #json/provider.py -> provider.py
     rows = []
@@ -24,7 +25,7 @@ def best_matches(truths: pd.DataFrame, rules: pd.DataFrame) -> pd.DataFrame:
         candidates = rules[code_file.isin(code_files)]
 
         if candidates.empty:
-            #No rules were extracted for this document's code files, so the ground truths stay unmatched
+            #No rules were extracted for this document's code files, so the ground truths stay unpaired
             rows += [{'file': doc, 'ground_truth': truth} for truth in group['business_rule']]
             continue
 
@@ -32,20 +33,20 @@ def best_matches(truths: pd.DataFrame, rules: pd.DataFrame) -> pd.DataFrame:
                                    model.encode(candidates['description'].tolist()))
 
         for truth, row in zip(group['business_rule'], scores):
-            best = candidates.iloc[row.argmax()]
-            rows.append({'file': doc, 'ground_truth': truth, 'business_rule': best['description'],
-                         'rule_file': best['filename'], 'cosine': row.max()})
+            for description, filename, score in zip(candidates['description'], candidates['filename'], row):
+                rows.append({'file': doc, 'ground_truth': truth, 'business_rule': description,
+                             'rule_file': filename, 'cosine': score})
 
     return pd.DataFrame(rows, columns = ['file', 'ground_truth', 'business_rule', 'rule_file', 'cosine'])
 
-def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
-    #Adds the METEOR, ROUGE, BERT and LLM scores for every ground truth that has a matched business rule
-    matched = matches.dropna(subset = ['business_rule'])
-    if matched.empty:
-        return matches
+def score_pairs(pairs: pd.DataFrame) -> pd.DataFrame:
+    #Adds the METEOR, ROUGE, BERT and LLM scores for every ground truth and business rule pair
+    paired = pairs.dropna(subset = ['business_rule'])
+    if paired.empty:
+        return pairs
 
-    references, hypotheses = matched['ground_truth'].tolist(), matched['business_rule'].tolist()
-    scores = pd.DataFrame(index = matched.index)
+    references, hypotheses = paired['ground_truth'].tolist(), paired['business_rule'].tolist()
+    scores = pd.DataFrame(index = paired.index)
 
     scores['meteor'] = [compute_meteor(r, h) for r, h in zip(references, hypotheses)]
 
@@ -59,7 +60,8 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     scores['bert_precision'], scores['bert_recall'], scores['bert_f1'] = P.tolist(), R.tolist(), F1.tolist()
 
     #LLM evaluator: one score per iteration, repeating the last one if the loop stopped early
-    results = sim_app.batch([{'statement_a': r, 'statement_b': h} for r, h in zip(references, hypotheses)])
+    results = sim_app.batch([{'statement_a': r, 'statement_b': h} for r, h in zip(references, hypotheses)],
+                            config = {'max_concurrency': LLM_CONCURRENCY})
     passes = [[entry['score'] for entry in result['history']] for result in results]
     passes = [p + [p[-1]] * (MAX_SIM_ITERATION - len(p)) for p in passes]
     for number in range(MAX_SIM_ITERATION):
@@ -67,12 +69,12 @@ def score_matches(matches: pd.DataFrame) -> pd.DataFrame:
     scores['llm_score'] = [result['score'] for result in results]
     scores['llm_reason'] = [result['reason'] for result in results]
 
-    return matches.join(scores)
+    return pairs.join(scores)
 
 def compare(rules_path: str, output_path: str, truth_path: str = GROUND_TRUTH) -> pd.DataFrame:
     #Compares one file of extracted business rules to the ground truths and saves the result
     truths, rules = pd.read_csv(truth_path), pd.read_csv(rules_path)
-    result = score_matches(best_matches(truths, rules))
+    result = score_pairs(all_pairs(truths, rules))
     result.to_csv(output_path, index = False)
     return result
 
@@ -85,5 +87,6 @@ if __name__ == '__main__':
                 continue
 
             result = compare(rules_path, f'{OUTPUT_FOLDER}/{prompt_format}/comparison{iteration}.csv')
-            unmatched = result['business_rule'].isna().sum()
-            print(f'{prompt_format} iteration {iteration}: {len(result)} ground truths, {unmatched} with no rules to compare against')
+            unpaired = result['business_rule'].isna().sum()
+            print(f'{prompt_format} iteration {iteration}: {len(result) - unpaired} pairs scored, '
+                  f'{unpaired} ground truths with no rules to compare against')
