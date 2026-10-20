@@ -7,7 +7,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from evaluators import compute_meteor, compute_rouge, CODE_DOCUMENTATION_MAP
 from similarity import sim_app, MAX_SIM_ITERATION
 
-GROUND_TRUTH = 'data/groundtruth.csv'
+GROUND_TRUTH = 'data/groundtruth2.csv'
 OUTPUT_FOLDER = 'outputs'
 PROMPT_FORMATS = ['cobrex', 'user_story']
 MAX_BR_ITERATION = 3
@@ -81,7 +81,7 @@ def compare(rules_path: str, output_path: str, truth_path: str = GROUND_TRUTH) -
 if __name__ == '__main__':
     for prompt_format in PROMPT_FORMATS:
         for iteration in range(MAX_BR_ITERATION + 1):
-            rules_path = f'{OUTPUT_FOLDER}/{prompt_format}/br{iteration}.csv'
+            rules_path = f'{OUTPUT_FOLDER}/trial2/{prompt_format}/br{iteration}.csv'
             if not Path(rules_path).exists():
                 print(f'{rules_path} not found, skipped')
                 continue

@@ -1,0 +1,233 @@
+rule_id,file,feature,business_rule
+BR-001,config.rst,Config object,The application config is a dictionary subclass that can be read and modified like any dict.
+BR-002,config.rst,Config object,Certain config values are forwarded to the Flask object so they can be read and written as app attributes (e.g. app.testing).
+BR-003,config.rst,Config object,Multiple config keys can be set at once using the dict update method.
+BR-004,config.rst,Config object,Flask and its extensions store their own settings in the same config object as the application's settings.
+BR-005,config.rst,Debug mode,Debug mode should be enabled with the --debug option on the flask command rather than in config or code.
+BR-006,config.rst,Debug mode,Setting DEBUG in code is discouraged because flask run cannot read it early and extensions may already have configured themselves.
+BR-007,config.rst,Debug mode,"When debug mode is on, flask run uses the interactive debugger and the reloader by default."
+BR-008,config.rst,DEBUG,The DEBUG value is set from the FLASK_DEBUG environment variable and maps to the app.debug attribute.
+BR-009,config.rst,DEBUG,DEBUG defaults to False.
+BR-010,config.rst,DEBUG,Debug mode must not be enabled in a production deployment.
+BR-011,config.rst,TESTING,"When TESTING is enabled, exceptions propagate instead of being handled by the app's error handlers."
+BR-012,config.rst,TESTING,"When TESTING is enabled, extensions may change their behavior to make testing easier."
+BR-013,config.rst,TESTING,TESTING defaults to False and should be enabled in your own tests.
+BR-014,config.rst,PROPAGATE_EXCEPTIONS,"When PROPAGATE_EXCEPTIONS is true, exceptions are re-raised rather than handled by the app's error handlers."
+BR-015,config.rst,PROPAGATE_EXCEPTIONS,"When PROPAGATE_EXCEPTIONS is unset, it is implicitly true if TESTING or DEBUG is enabled."
+BR-016,config.rst,TRAP_HTTP_EXCEPTIONS,"When TRAP_HTTP_EXCEPTIONS is enabled and no handler exists for an HTTPException, the exception is re-raised to the interactive debugger instead of returned as an error response."
+BR-017,config.rst,TRAP_HTTP_EXCEPTIONS,TRAP_HTTP_EXCEPTIONS defaults to False.
+BR-018,config.rst,TRAP_BAD_REQUEST_ERRORS,Accessing a missing key in request dicts such as args or form returns a 400 Bad Request by default.
+BR-019,config.rst,TRAP_BAD_REQUEST_ERRORS,"When TRAP_BAD_REQUEST_ERRORS is enabled, a missing request key is treated as an unhandled exception so the interactive debugger is shown."
+BR-020,config.rst,TRAP_BAD_REQUEST_ERRORS,"When TRAP_BAD_REQUEST_ERRORS is unset, it is enabled in debug mode."
+BR-021,config.rst,SECRET_KEY,The SECRET_KEY is used to securely sign the session cookie and may be used by extensions for other security needs.
+BR-022,config.rst,SECRET_KEY,The SECRET_KEY should be a long random bytes or str value.
+BR-023,config.rst,SECRET_KEY,The SECRET_KEY must never be revealed in public posts or committed code.
+BR-024,config.rst,SECRET_KEY,SECRET_KEY defaults to None.
+BR-025,config.rst,SECRET_KEY_FALLBACKS,"SECRET_KEY_FALLBACKS holds old secret keys that can still be used to unsign data, allowing key rotation without invalidating active sessions."
+BR-026,config.rst,SECRET_KEY_FALLBACKS,"The default implementation tests the last fallback key in the list first, so keys should be ordered oldest to newest."
+BR-027,config.rst,SECRET_KEY_FALLBACKS,Fallback keys should be removed after an appropriate period because each additional key adds checking overhead.
+BR-028,config.rst,SECRET_KEY_FALLBACKS,Extensions that use SECRET_KEY may not yet support SECRET_KEY_FALLBACKS.
+BR-029,config.rst,SESSION_COOKIE_NAME,The session cookie name defaults to 'session' and can be changed to avoid clashing with an existing cookie.
+BR-030,config.rst,SESSION_COOKIE_DOMAIN,"When SESSION_COOKIE_DOMAIN is not set, browsers send the session cookie only to the exact domain that set it."
+BR-031,config.rst,SESSION_COOKIE_DOMAIN,"When SESSION_COOKIE_DOMAIN is set, browsers send the session cookie to that domain and all its subdomains."
+BR-032,config.rst,SESSION_COOKIE_DOMAIN,Leaving SESSION_COOKIE_DOMAIN unset is more restrictive and more secure than setting it.
+BR-033,config.rst,SESSION_COOKIE_DOMAIN,Changing SESSION_COOKIE_DOMAIN after browsers already hold a cookie may create a second cookie that is sent in undefined order.
+BR-034,config.rst,SESSION_COOKIE_DOMAIN,SESSION_COOKIE_DOMAIN does not fall back to SERVER_NAME.
+BR-035,config.rst,SESSION_COOKIE_PATH,"When SESSION_COOKIE_PATH is not set, the session cookie is valid under APPLICATION_ROOT, or under '/' if that is not set."
+BR-036,config.rst,SESSION_COOKIE_HTTPONLY,Session cookies are marked HTTP-only by default so browser JavaScript cannot access them.
+BR-037,config.rst,SESSION_COOKIE_SECURE,"When SESSION_COOKIE_SECURE is enabled, browsers send the session cookie only over HTTPS."
+BR-038,config.rst,SESSION_COOKIE_SECURE,SESSION_COOKIE_SECURE defaults to False and only makes sense when the app is served over HTTPS.
+BR-039,config.rst,SESSION_COOKIE_PARTITIONED,"When SESSION_COOKIE_PARTITIONED is enabled, browsers scope the cookie to the top-level document's domain to prevent third-party cookies leaking between sites."
+BR-040,config.rst,SESSION_COOKIE_PARTITIONED,Enabling SESSION_COOKIE_PARTITIONED implicitly enables SESSION_COOKIE_SECURE.
+BR-041,config.rst,SESSION_COOKIE_PARTITIONED,SESSION_COOKIE_PARTITIONED defaults to False and should be enabled for cookies expected to work in embedded third-party contexts.
+BR-042,config.rst,SESSION_COOKIE_SAMESITE,SESSION_COOKIE_SAMESITE restricts cross-site cookie sending and accepts 'Lax' (recommended) or 'Strict'.
+BR-043,config.rst,SESSION_COOKIE_SAMESITE,SESSION_COOKIE_SAMESITE defaults to None.
+BR-044,config.rst,PERMANENT_SESSION_LIFETIME,"When session.permanent is true, the cookie expiration is set PERMANENT_SESSION_LIFETIME seconds in the future."
+BR-045,config.rst,PERMANENT_SESSION_LIFETIME,PERMANENT_SESSION_LIFETIME accepts either a timedelta or an integer number of seconds.
+BR-046,config.rst,PERMANENT_SESSION_LIFETIME,PERMANENT_SESSION_LIFETIME defaults to 31 days (2678400 seconds).
+BR-047,config.rst,PERMANENT_SESSION_LIFETIME,The default cookie session rejects a signature older than PERMANENT_SESSION_LIFETIME.
+BR-048,config.rst,SESSION_REFRESH_EACH_REQUEST,"When SESSION_REFRESH_EACH_REQUEST is true and the session is permanent, the cookie is sent with every response."
+BR-049,config.rst,SESSION_REFRESH_EACH_REQUEST,SESSION_REFRESH_EACH_REQUEST defaults to True.
+BR-050,config.rst,SESSION_REFRESH_EACH_REQUEST,SESSION_REFRESH_EACH_REQUEST does not affect non-permanent sessions.
+BR-051,config.rst,USE_X_SENDFILE,"When USE_X_SENDFILE is enabled, Flask sets the X-Sendfile header instead of serving file data itself."
+BR-052,config.rst,USE_X_SENDFILE,USE_X_SENDFILE defaults to False and only makes sense with a web server that recognizes the header.
+BR-053,config.rst,SEND_FILE_MAX_AGE_DEFAULT,SEND_FILE_MAX_AGE_DEFAULT sets the cache-control max age for served files as a timedelta or integer seconds.
+BR-054,config.rst,SEND_FILE_MAX_AGE_DEFAULT,The file cache max age can be overridden per file with get_send_file_max_age on the app or blueprint.
+BR-055,config.rst,SEND_FILE_MAX_AGE_DEFAULT,"When SEND_FILE_MAX_AGE_DEFAULT is None, browsers are told to use conditional requests instead of a timed cache."
+BR-056,config.rst,TRUSTED_HOSTS,"When a request host does not match TRUSTED_HOSTS, a SecurityError is raised and a 400 error is returned."
+BR-057,config.rst,TRUSTED_HOSTS,"When TRUSTED_HOSTS is None, all hosts are considered valid."
+BR-058,config.rst,TRUSTED_HOSTS,"A TRUSTED_HOSTS entry matches exactly, or matches any subdomain when it starts with a dot."
+BR-059,config.rst,TRUSTED_HOSTS,"Trusted host validation happens during routing, and before_request and after_request callbacks still run."
+BR-060,config.rst,SERVER_NAME,SERVER_NAME must be set when subdomain matching is enabled so the subdomain can be extracted from the request.
+BR-061,config.rst,SERVER_NAME,SERVER_NAME must be set for url_for to generate external URLs outside a request context.
+BR-062,config.rst,SERVER_NAME,SERVER_NAME does not restrict incoming requests to only that domain.
+BR-063,config.rst,SERVER_NAME,Setting SERVER_NAME does not implicitly enable subdomain matching.
+BR-064,config.rst,SERVER_NAME,SERVER_NAME does not affect SESSION_COOKIE_DOMAIN.
+BR-065,config.rst,APPLICATION_ROOT,APPLICATION_ROOT tells the app which path it is mounted under for generating URLs outside a request context.
+BR-066,config.rst,APPLICATION_ROOT,"Inside a request, the dispatcher's SCRIPT_NAME is used instead of APPLICATION_ROOT."
+BR-067,config.rst,APPLICATION_ROOT,APPLICATION_ROOT defaults to '/'.
+BR-068,config.rst,PREFERRED_URL_SCHEME,PREFERRED_URL_SCHEME sets the scheme for external URLs generated outside a request context and defaults to 'http'.
+BR-069,config.rst,MAX_CONTENT_LENGTH,"When a request body exceeds MAX_CONTENT_LENGTH, a 413 RequestEntityTooLarge error is raised."
+BR-070,config.rst,MAX_CONTENT_LENGTH,"When MAX_CONTENT_LENGTH is None, no request size limit is enforced at the application level."
+BR-071,config.rst,MAX_CONTENT_LENGTH,"When MAX_CONTENT_LENGTH is None and the request has no Content-Length and the server does not signal stream termination, no data is read."
+BR-072,config.rst,MAX_CONTENT_LENGTH,MAX_CONTENT_LENGTH can be overridden for a specific view via Request.max_content_length.
+BR-073,config.rst,MAX_FORM_MEMORY_SIZE,"When a non-file field in a multipart form exceeds MAX_FORM_MEMORY_SIZE bytes, a 413 RequestEntityTooLarge error is raised."
+BR-074,config.rst,MAX_FORM_MEMORY_SIZE,"MAX_FORM_MEMORY_SIZE defaults to 500000 bytes, and None disables the limit."
+BR-075,config.rst,MAX_FORM_MEMORY_SIZE,MAX_FORM_MEMORY_SIZE can be overridden for a specific view via Request.max_form_memory_parts.
+BR-076,config.rst,MAX_FORM_PARTS,"When a multipart form contains more fields than MAX_FORM_PARTS, a 413 RequestEntityTooLarge error is raised."
+BR-077,config.rst,MAX_FORM_PARTS,"MAX_FORM_PARTS defaults to 1000, and None disables the limit."
+BR-078,config.rst,MAX_FORM_PARTS,MAX_FORM_PARTS can be overridden for a specific view via Request.max_form_parts.
+BR-079,config.rst,TEMPLATES_AUTO_RELOAD,"When TEMPLATES_AUTO_RELOAD is enabled, templates are reloaded when their files change."
+BR-080,config.rst,TEMPLATES_AUTO_RELOAD,"When TEMPLATES_AUTO_RELOAD is unset, it is enabled in debug mode."
+BR-081,config.rst,EXPLAIN_TEMPLATE_LOADING,"When EXPLAIN_TEMPLATE_LOADING is enabled, Flask logs how each template file was located and loaded."
+BR-082,config.rst,EXPLAIN_TEMPLATE_LOADING,EXPLAIN_TEMPLATE_LOADING defaults to False.
+BR-083,config.rst,MAX_COOKIE_SIZE,"A warning is issued when cookie headers exceed MAX_COOKIE_SIZE, which defaults to 4093 bytes."
+BR-084,config.rst,MAX_COOKIE_SIZE,Setting MAX_COOKIE_SIZE to 0 disables the oversized cookie warning.
+BR-085,config.rst,PROVIDE_AUTOMATIC_OPTIONS,Setting PROVIDE_AUTOMATIC_OPTIONS to False disables automatically generated OPTIONS responses app-wide.
+BR-086,config.rst,PROVIDE_AUTOMATIC_OPTIONS,PROVIDE_AUTOMATIC_OPTIONS can be overridden per route via the provide_automatic_options attribute.
+BR-087,config.rst,Removed config values,PRESERVE_CONTEXT_ON_EXCEPTION was removed in Flask 2.2.
+BR-088,config.rst,Removed config values,ENV was removed in Flask 2.3.
+BR-089,config.rst,Removed config values,The JSON_* and JSONIFY_* config keys were removed in Flask 2.3 in favor of attributes on the app.json provider.
+BR-090,config.rst,Removed config values,LOGGER_NAME and LOGGER_HANDLER_POLICY were removed in Flask 1.0.
+BR-091,config.rst,Loading config from Python files,Configuration can be loaded from a module or object with from_object.
+BR-092,config.rst,Loading config from Python files,Configuration can be loaded from a file whose path is held in an environment variable with from_envvar.
+BR-093,config.rst,Loading config from Python files,"Values loaded later override values loaded earlier, so defaults are loaded first and deployment settings second."
+BR-094,config.rst,Loading config from Python files,Only uppercase names in a configuration file are stored in the config object.
+BR-095,config.rst,Loading config from Python files,Configuration should be loaded very early so extensions can access it at startup.
+BR-096,config.rst,Loading config from data files,Configuration can be loaded from any file format with from_file by passing a load function.
+BR-097,config.rst,Loading config from data files,"Loaders that read binary files, such as tomllib.load, require text=False."
+BR-098,config.rst,Loading config from environment,from_prefixed_env loads every environment variable starting with a prefix into the config.
+BR-099,config.rst,Loading config from environment,The from_prefixed_env prefix defaults to FLASK_ and can be changed with the prefix argument.
+BR-100,config.rst,Loading config from environment,The prefix is stripped from environment variable names to form the config key.
+BR-101,config.rst,Loading config from environment,"Environment values are parsed with json.loads by default, and the parser can be changed with the loads argument."
+BR-102,config.rst,Loading config from environment,"With the default JSON parsing, only lowercase 'true' and 'false' are valid boolean values."
+BR-103,config.rst,Loading config from environment,A double underscore in an environment variable name sets a key in a nested dictionary.
+BR-104,config.rst,Loading config from environment,Missing intermediate keys in a nested environment variable path are initialized as empty dicts.
+BR-105,config.rst,Loading config from environment,"On Windows, environment variable keys are always uppercase, so nested keys become uppercase."
+BR-106,config.rst,Config best practices,Creating the app in a factory function allows multiple instances with different configurations for easier testing.
+BR-107,config.rst,Config best practices,Code should not require configuration at import time so the app can be reconfigured later.
+BR-108,config.rst,Config best practices,Configuration should be loaded before extensions call init_app.
+BR-109,config.rst,Development / production config,A default configuration should be kept in version control and overridden by a separate deployment-specific configuration.
+BR-110,config.rst,Development / production config,An environment variable should be used to switch between configurations without touching code.
+BR-111,config.rst,Development / production config,Configurations can be organized as classes that inherit shared settings from a base config class.
+BR-112,config.rst,Development / production config,"from_object does not instantiate a config class, so it must be instantiated first to use properties."
+BR-113,config.rst,Development / production config,Only uppercase property names on an instantiated config object are loaded as config values.
+BR-114,config.rst,Instance folders,The instance folder is meant for deployment-specific files and runtime-changing data and is not meant to be under version control.
+BR-115,config.rst,Instance folders,An explicitly provided instance_path must be an absolute path.
+BR-116,config.rst,Instance folders,"For an uninstalled module or package, the default instance folder is an 'instance' folder next to it."
+BR-117,config.rst,Instance folders,"For an installed module or package, the default instance folder is $PREFIX/var/<appname>-instance."
+BR-118,config.rst,Instance folders,Relative config filenames resolve against the application root by default.
+BR-119,config.rst,Instance folders,Setting instance_relative_config=True makes relative config filenames resolve against the instance folder.
+BR-120,config.rst,Instance folders,from_pyfile with silent=True does not fail when the config file is missing.
+BR-121,config.rst,Instance folders,open_instance_resource opens a file relative to the instance folder.
+BR-122,signals.rst,Signals,A signal notifies all of its subscribers by calling each one when the event it represents occurs.
+BR-123,signals.rst,Signals,Flask signals are implemented with the Blinker library.
+BR-124,signals.rst,Signals,Extensions may provide their own signals in addition to Flask's built-in ones.
+BR-125,signals.rst,Signals,"Unlike decorator-based handlers, signals can be subscribed to temporarily."
+BR-126,signals.rst,Signals,"Unlike decorator-based handlers, signal subscribers cannot directly affect the application."
+BR-127,signals.rst,Subscribing to signals,A function subscribes to a signal with connect and can optionally specify a sender to listen to.
+BR-128,signals.rst,Subscribing to signals,A function unsubscribes from a signal with disconnect.
+BR-129,signals.rst,Subscribing to signals,"For all core Flask signals, the sender is the application that issued the signal."
+BR-130,signals.rst,Subscribing to signals,Subscribers should specify a sender unless they intend to listen to signals from all applications.
+BR-131,signals.rst,Subscribing to signals,Subscriber functions should accept **extra so they do not break if Flask adds new signal arguments.
+BR-132,signals.rst,Subscribing to signals,connected_to temporarily subscribes a function for the duration of a with block.
+BR-133,signals.rst,Subscribing to signals,The connect_via decorator subscribes the decorated function to a signal for a given sender.
+BR-134,signals.rst,Creating signals,Custom signals should be created as named signals in a Blinker Namespace.
+BR-135,signals.rst,Creating signals,A signal's name makes it unique and is available through its name attribute.
+BR-136,signals.rst,Sending signals,"A signal is emitted with send, which takes a sender first and forwards keyword arguments to subscribers."
+BR-137,signals.rst,Sending signals,A class emitting a signal should pass self as the sender.
+BR-138,signals.rst,Sending signals,A plain function emitting a signal should pass current_app._get_current_object() as the sender.
+BR-139,signals.rst,Sending signals,The current_app proxy must never be passed directly as a signal sender.
+BR-140,signals.rst,Signals and request context,Context-local proxies such as g are available to subscribers between request_started and request_finished.
+BR-141,blueprints.rst,Blueprints,A blueprint is not an application but a recorded set of operations that are executed when registered on an application.
+BR-142,blueprints.rst,Blueprints,"Blueprints share the application's config, unlike separate applications dispatched at the WSGI layer."
+BR-143,blueprints.rst,Blueprints,A blueprint cannot be unregistered without destroying the whole application object.
+BR-144,blueprints.rst,Blueprints,"A blueprint does not need to define view functions and can provide only templates, static files, filters, or other utilities."
+BR-145,blueprints.rst,Blueprint registration,A blueprint's route decorator records the view so it is registered when the blueprint is registered on an app.
+BR-146,blueprints.rst,Blueprint registration,A blueprint's endpoints are prefixed with the blueprint name and a dot.
+BR-147,blueprints.rst,Blueprint registration,A blueprint's name changes its endpoints but not its URLs.
+BR-148,blueprints.rst,Blueprint registration,A blueprint registered with url_prefix has all its routes mounted under that prefix.
+BR-149,blueprints.rst,Blueprint registration,Parameters in a blueprint's URL prefix or subdomain become common view arguments for all its views.
+BR-150,blueprints.rst,Blueprint registration,A blueprint can be registered multiple times on one app with different URL rules.
+BR-151,blueprints.rst,Blueprint registration,Whether a blueprint works correctly when registered multiple times depends on its implementation.
+BR-152,blueprints.rst,Nested blueprints,A blueprint can be registered on another blueprint.
+BR-153,blueprints.rst,Nested blueprints,A nested blueprint's name is prefixed with its parent's name.
+BR-154,blueprints.rst,Nested blueprints,A nested blueprint's URLs are prefixed with its parent's URL prefix.
+BR-155,blueprints.rst,Nested blueprints,A nested blueprint's subdomain is prefixed onto its parent's subdomain.
+BR-156,blueprints.rst,Nested blueprints,Request hooks such as before_request registered on a parent blueprint also run for its child blueprints.
+BR-157,blueprints.rst,Nested blueprints,"If a child blueprint has no handler for an exception, the parent blueprint's error handler is tried."
+BR-158,blueprints.rst,Blueprint resources,"A blueprint's resource folder is the package named by its import name, or the containing package if it is a module."
+BR-159,blueprints.rst,Blueprint resources,A blueprint's root_path attribute shows its resource folder.
+BR-160,blueprints.rst,Blueprint resources,open_resource opens a file relative to the blueprint's resource folder.
+BR-161,blueprints.rst,Blueprint static files,"A blueprint exposes static files from static_folder, given as an absolute path or relative to the blueprint's location."
+BR-162,blueprints.rst,Blueprint static files,"A blueprint's static files are served at its url_prefix plus the folder name by default, changeable with static_url_path."
+BR-163,blueprints.rst,Blueprint static files,A blueprint's static endpoint is named <blueprint_name>.static.
+BR-164,blueprints.rst,Blueprint static files,A blueprint without a url_prefix cannot serve its static folder because the app's /static route takes precedence.
+BR-165,blueprints.rst,Blueprint static files,Blueprint static folders are not searched as a fallback when a file is missing from the app's static folder.
+BR-166,blueprints.rst,Blueprint templates,A blueprint's template_folder is added to the template search path at lower priority than the app's template folder.
+BR-167,blueprints.rst,Blueprint templates,An application template overrides a blueprint template with the same relative path.
+BR-168,blueprints.rst,Blueprint templates,"When multiple blueprints provide the same template path, the first registered blueprint takes precedence."
+BR-169,blueprints.rst,Blueprint templates,Blueprint templates should be placed in a subfolder named after the blueprint to avoid being accidentally overridden.
+BR-170,blueprints.rst,Blueprint URL building,url_for builds URLs for blueprint endpoints using the blueprint name and a dot as a prefix.
+BR-171,blueprints.rst,Blueprint URL building,"Within a blueprint view or template, an endpoint starting with only a dot refers to an endpoint in the same blueprint."
+BR-172,blueprints.rst,Blueprint error handlers,Blueprints support the errorhandler decorator for blueprint-specific error pages.
+BR-173,blueprints.rst,Blueprint error handlers,"Blueprint 404 and 405 handlers are only invoked by raise or abort inside the blueprint's views, not by invalid URLs."
+BR-174,blueprints.rst,Blueprint error handlers,Handling 404 or 405 differently by URL prefix must be done in an app-level handler that inspects request.path.
+BR-175,api.rst,Request proxy,The request proxy is only available when a request context is active.
+BR-176,api.rst,Sessions,Sessions can only be used when the app's secret key is set.
+BR-177,api.rst,Sessions,Sessions are stored in a signed cookie that the user can read but cannot modify without the secret key.
+BR-178,api.rst,Sessions,The secret key should be complex and unguessable.
+BR-179,api.rst,Sessions,The session proxy is only available when a request context is active.
+BR-180,api.rst,Sessions,The session tracks assignment and access of keys but cannot detect changes to mutable values.
+BR-181,api.rst,Sessions,"After mutating a list or dict in the session, session.modified must be set to True manually."
+BR-182,api.rst,Sessions,By default the browser clears the session cookie when it is closed.
+BR-183,api.rst,Sessions,Setting session.permanent to True persists the cookie for PERMANENT_SESSION_LIFETIME.
+BR-184,api.rst,Sessions,The app.permanent_session_lifetime attribute is always a timedelta even if the config value is an integer.
+BR-185,api.rst,Session interface,The session implementation can be replaced by providing a custom session interface.
+BR-186,api.rst,Application globals (g),The g object stores data valid for a single request or app context and is safe in threaded environments.
+BR-187,api.rst,Application globals (g),The g object is only available when an app context is active.
+BR-188,api.rst,Application globals (g),The g object has been bound to the application context instead of the request context since Flask 0.10.
+BR-189,api.rst,current_app,The current_app proxy is only available when an app context is active.
+BR-190,api.rst,JSON support,Flask uses Python's built-in json module by default.
+BR-191,api.rst,JSON support,The JSON implementation can be changed by setting json_provider_class or app.json.
+BR-192,api.rst,JSON support,flask.json functions use the app's JSON provider methods when an app context is active.
+BR-193,api.rst,JSON support,The Jinja tojson filter uses the app's JSON provider and marks its output as safe.
+BR-194,api.rst,Internal contexts,"RequestContext is deprecated since Flask 3.2, merged into AppContext, and will be removed in Flask 4.0."
+BR-195,api.rst,Internal contexts,"request_ctx is deprecated since Flask 3.2, merged into app_ctx, and will be removed in Flask 4.0."
+BR-196,api.rst,template_rendered signal,"template_rendered is sent after a template is successfully rendered, with the template and context."
+BR-197,api.rst,before_render_template signal,"before_render_template is sent before template rendering begins, with the template and context."
+BR-198,api.rst,request_started signal,request_started is sent after the request context is set up and before any request processing happens.
+BR-199,api.rst,request_finished signal,"request_finished is sent right before the response is sent to the client, with the response."
+BR-200,api.rst,got_request_exception signal,"got_request_exception is sent when an unhandled exception occurs during request processing, including in debug mode."
+BR-201,api.rst,got_request_exception signal,got_request_exception is not sent for HTTPExceptions or exceptions with registered handlers unless raised from an error handler.
+BR-202,api.rst,request_tearing_down signal,"request_tearing_down is always sent when the request tears down, even if an exception occurred."
+BR-203,api.rst,request_tearing_down signal,"request_tearing_down subscribers currently run after regular teardown handlers, but this order is not guaranteed."
+BR-204,api.rst,request_tearing_down signal,"request_tearing_down passes the causing exception, if any, as the exc keyword argument."
+BR-205,api.rst,appcontext_tearing_down signal,"appcontext_tearing_down is always sent when the app context tears down, even if an exception occurred."
+BR-206,api.rst,appcontext_tearing_down signal,"appcontext_tearing_down passes the causing exception, if any, as the exc keyword argument."
+BR-207,api.rst,appcontext_pushed signal,appcontext_pushed is sent with the application as sender when an application context is pushed.
+BR-208,api.rst,appcontext_popped signal,appcontext_popped is sent with the application as sender when an application context is popped.
+BR-209,api.rst,message_flashed signal,"message_flashed is sent when the app flashes a message, with the message and its category."
+BR-210,api.rst,URL routing,"A URL rule can be registered with the route decorator, with add_url_rule, or directly on url_map."
+BR-211,api.rst,URL routing,Variable parts of a URL rule are written in angle brackets and passed to the view as keyword arguments.
+BR-212,api.rst,URL converters,By default a URL variable accepts any text without a slash.
+BR-213,api.rst,URL converters,The int converter accepts integers and the float converter accepts floating point values.
+BR-214,api.rst,URL converters,The path converter accepts text including slashes.
+BR-215,api.rst,URL converters,The any converter matches one of a provided set of items.
+BR-216,api.rst,URL converters,The uuid converter accepts UUID strings.
+BR-217,api.rst,URL converters,Custom URL converters can be defined through url_map.
+BR-218,api.rst,Trailing slashes,"If a rule ends with a slash and is requested without one, the user is redirected to the URL with the slash."
+BR-219,api.rst,Trailing slashes,"If a rule has no trailing slash and is requested with one, a 404 Not Found is raised."
+BR-220,api.rst,URL routing,"Multiple URL rules can point to the same view function, but each rule must be unique."
+BR-221,api.rst,URL defaults,A URL rule can specify default values for its variables.
+BR-222,api.rst,URL defaults,A URL that contains a rule's default value is redirected to the simpler URL with a 308 redirect.
+BR-223,api.rst,URL defaults,A default route should only handle GET because redirects cannot preserve form data.
+BR-224,api.rst,Endpoints,The endpoint defaults to the view function's name unless explicitly provided.
+BR-225,api.rst,Endpoints,A view function can be attached to an endpoint later by storing it in view_functions.
+BR-226,api.rst,Endpoints,"A blueprint view's endpoint is always prefixed with the blueprint name, which the function cannot customize."
+BR-227,api.rst,HTTP methods,By default a URL rule listens only for GET and implicitly HEAD.
+BR-228,api.rst,HTTP methods,OPTIONS is implicitly added and handled for URL rules since Flask 0.6.
+BR-229,api.rst,HTTP methods,Allowed methods for a rule must be passed as keyword arguments.
+BR-230,api.rst,View function options,"If methods are not given when registering a rule, Flask uses the view function's methods attribute if it exists."
+BR-231,api.rst,View function options,A view's provide_automatic_options attribute forces automatic OPTIONS handling on or off for that view.
+BR-232,api.rst,View function options,Methods in a view's required_methods attribute are always added even if methods are overridden in route().
