@@ -1,0 +1,18 @@
+# LangChain / LangGraph layer (replaces litellm)
+langchain>=1.4
+langchain-core>=1.6
+langgraph>=1.2
+langchain-openai>=1.7          # provider integration for "openai"
+# langchain-anthropic          # add the integration for each other provider you use
+langgraph-checkpoint-sqlite>=3.1   # optional: --checkpoint run history
+
+# Existing Groundwork dependencies
+psycopg[binary]>=3.2
+kuzu>=0.11
+python-dotenv
+cryptography
+tiktoken
+tree-sitter>=0.25
+chromadb
+sentence-transformers
+pytest
