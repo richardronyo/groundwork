@@ -57,7 +57,7 @@ def br_loop():
     return graph.compile()
 
 
-def save_history(runs: dict[str, list[dict]], folder: str = 'outputs/user_story') -> None:
+def save_history(runs: dict[str, list[dict]], folder: str = 'outputs/trial2/cobrex') -> None:
     #Writes one CSV per iteration, holding the rules and scores from every source file
     frames = [pd.DataFrame(entry['rules']).assign(filename=filename, iteration=entry['iteration'], **entry['scores'])
               for filename, history in runs.items() for entry in history]
@@ -76,7 +76,7 @@ if __name__ == '__main__':
         result = app.invoke({
             'filename': filename,
             'source_code': path.read_text(),
-            'br_prompt': USER_STORY_BR,
+            'br_prompt': COBREX_BR,
         })
 
         runs[filename] = result['history']

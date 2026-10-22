@@ -3,3 +3,5 @@ chroma_db/*
 repos/*
 kuzu_db
 cache/*
+experiments/exp1/data/*
+experiments/exp1/outputs/*

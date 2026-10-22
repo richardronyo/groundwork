@@ -1,0 +1,32 @@
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 3528.45it/s]
+Loading weights:   0%|          | 0/389 [00:00<?, ?it/s]Loading weights:  34%|███▍      | 132/389 [00:00<00:00, 1300.87it/s]Loading weights: 100%|██████████| 389/389 [00:00<00:00, 2382.67it/s]
+[transformers] [1mRobertaModel LOAD REPORT[0m from: roberta-large
+Key                       | Status     | 
+--------------------------+------------+-
+lm_head.dense.weight      | UNEXPECTED | 
+lm_head.layer_norm.bias   | UNEXPECTED | 
+lm_head.layer_norm.weight | UNEXPECTED | 
+lm_head.bias              | UNEXPECTED | 
+lm_head.dense.bias        | UNEXPECTED | 
+pooler.dense.weight       | MISSING    | 
+pooler.dense.bias         | MISSING    | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING:	those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+cobrex iteration 0:
+  30683 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 696 new pairs to score, 0 already cached
+  30683 pairs scored, 0 ground truths with no rules to compare against
+cobrex iteration 1:
+  45286 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 280 new pairs to score, 416 already cached
+  45286 pairs scored, 0 ground truths with no rules to compare against
+cobrex iteration 2:
+  48579 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 104 new pairs to score, 592 already cached
+  48579 pairs scored, 0 ground truths with no rules to compare against
+cobrex iteration 3:
+  51105 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 127 new pairs to score, 569 already cached
+  51105 pairs scored, 0 ground truths with no rules to compare against

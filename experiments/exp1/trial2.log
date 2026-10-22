@@ -1,0 +1,36 @@
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 3000.47it/s]
+Loading weights:   0%|          | 0/389 [00:00<?, ?it/s]Loading weights:  31%|███       | 120/389 [00:00<00:00, 1199.82it/s]Loading weights: 100%|██████████| 389/389 [00:00<00:00, 2123.68it/s]
+[transformers] [1mRobertaModel LOAD REPORT[0m from: roberta-large
+Key                       | Status     | 
+--------------------------+------------+-
+lm_head.layer_norm.bias   | UNEXPECTED | 
+lm_head.dense.bias        | UNEXPECTED | 
+lm_head.bias              | UNEXPECTED | 
+lm_head.dense.weight      | UNEXPECTED | 
+lm_head.layer_norm.weight | UNEXPECTED | 
+pooler.dense.bias         | MISSING    | 
+pooler.dense.weight       | MISSING    | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+- MISSING:	those params were newly initialized because missing from the checkpoint. Consider training on your downstream task.
+cobrex iteration 0:
+  27865 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 696 new pairs to score, 0 already cached
+  27865 pairs scored, 0 ground truths with no rules to compare against
+cobrex iteration 1:
+  35808 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 226 new pairs to score, 470 already cached
+  35808 pairs scored, 0 ground truths with no rules to compare against
+cobrex iteration 2:
+  40891 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 301 new pairs to score, 395 already cached
+  40891 pairs scored, 0 ground truths with no rules to compare against
+cobrex iteration 3:
+  42884 pairs total, 696 in the top 3 get BERT and LLM scores
+  LLM: 81 new pairs to score, 615 already cached
+  42884 pairs scored, 0 ground truths with no rules to compare against
+outputs/trial2/user_story/br0.csv not found, skipped
+outputs/trial2/user_story/br1.csv not found, skipped
+outputs/trial2/user_story/br2.csv not found, skipped
+outputs/trial2/user_story/br3.csv not found, skipped
